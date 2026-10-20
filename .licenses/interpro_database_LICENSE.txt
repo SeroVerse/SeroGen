@@ -1,0 +1,4 @@
+Notified user to check EMBL-EBI / InterPro terms of use at:
+- https://www.ebi.ac.uk/interpro/
+- https://www.ebi.ac.uk/about/terms-of-use/
+Timestamp: 2026-10-15T14:51:30+11:00

@@ -1,0 +1,68 @@
+/* SeroGen — Custom Zensical Theme Styling */
+
+:root {
+  --serogen-gradient: linear-gradient(135deg, #0d9488 0%, #0284c7 55%, #6366f1 100%);
+  --serogen-glow: rgba(14, 165, 233, 0.14);
+}
+
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #0b1120;
+  --md-default-bg-color--light: #111827;
+  --md-code-bg-color: #0f172a;
+  --serogen-glow: rgba(56, 189, 248, 0.16);
+}
+
+/* Hero Banner */
+.serogen-hero {
+  position: relative;
+  padding: 2.4rem 2.2rem;
+  margin-bottom: 2rem;
+  border-radius: 1rem;
+  background:
+    radial-gradient(circle at 85% 15%, var(--serogen-glow), transparent 55%),
+    linear-gradient(145deg, rgba(13, 148, 136, 0.10), rgba(2, 132, 199, 0.06));
+  border: 1px solid rgba(14, 165, 233, 0.24);
+  backdrop-filter: blur(10px);
+}
+
+.serogen-hero h1 {
+  margin: 0 0 0.6rem 0 !important;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  background: var(--serogen-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.serogen-hero p {
+  font-size: 1.05rem;
+  line-height: 1.65;
+  margin-bottom: 1.2rem;
+  opacity: 0.92;
+}
+
+.serogen-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+}
+
+/* Metric / Feature Grid Cards */
+.grid.cards > ul > li {
+  border-radius: 0.75rem !important;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.grid.cards > ul > li:hover {
+  transform: translateY(-2px);
+  border-color: rgba(14, 165, 233, 0.45) !important;
+  box-shadow: 0 10px 26px -10px var(--serogen-glow);
+}
+
+/* API Reference Symbol Headings */
+.doc-heading {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  padding-bottom: 0.35rem;
+}

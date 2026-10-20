@@ -1,0 +1,2 @@
+NCBI Sequence Fetch Skill Notice (2026-10-20T18:35:00+11:00):
+Please review NCBI terms and policies at https://www.ncbi.nlm.nih.gov/ and https://www.ncbi.nlm.nih.gov/home/about/policies/.

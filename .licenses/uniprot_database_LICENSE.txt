@@ -1,0 +1,4 @@
+Notified user to check UniProt terms of use and API query guidelines at:
+- https://www.uniprot.org/help/license
+- https://www.uniprot.org/help/api_queries
+Timestamp: 2026-10-15T14:51:30+11:00

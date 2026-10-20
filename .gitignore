@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments & caches
+.venv/
+.ruff_cache/
+.pytest_cache/
+.numba_cache/
+.cache/
+.coverage
+coverage.xml
+pytest-report.xml
+
+# Build & distribution artifacts
+build/
+dist/
+*.egg-info/
+src/serogen/_version.py
+
+# Documentation build output
+site/
+
+# Marimo & IDE files
+__marimo__/
+.idea/
+.vscode/
+.DS_Store
