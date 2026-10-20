@@ -215,9 +215,7 @@ class GeneRoleClassifier:
         if sample_weight is not None:
             sw_arr = np.asarray(sample_weight, dtype=np.float32)
             if len(sw_arr) != len(y_arr):
-                raise ValueError(
-                    f"Length of sample_weight ({len(sw_arr)}) does not match y ({len(y_arr)})."
-                )
+                raise ValueError(f"Length of sample_weight ({len(sw_arr)}) does not match y ({len(y_arr)}).")
             sw_arr = np.maximum(sw_arr, np.float32(0.0))
             mean_sw = float(np.mean(sw_arr))
             if mean_sw > 0.0:
@@ -414,7 +412,9 @@ class GeneRoleClassifier:
                 raise ValueError(f"Invalid kernel width in layer={layer!r}.") from err
             k_mask = np.where(self.k_sizes_ == k_val)[0]
             if len(k_mask) == 0:
-                raise ValueError(f"No filters with kernel size {k_val} in model (available: {self.unique_ks_.tolist()}).")
+                raise ValueError(
+                    f"No filters with kernel size {k_val} in model (available: {self.unique_ks_.tolist()})."
+                )
             idx = np.concatenate([k_mask, nf + k_mask])
             return np.ascontiguousarray(h[:, idx])
         raise ValueError(
@@ -485,15 +485,11 @@ class GeneRoleClassifier:
         probs = self.predict_proba(X)
         cids = np.asarray(cluster_ids, dtype=np.int64)
         if len(cids) != len(probs):
-            raise ValueError(
-                f"Length of cluster_ids ({len(cids)}) does not match X ({len(probs)})."
-            )
+            raise ValueError(f"Length of cluster_ids ({len(cids)}) does not match X ({len(probs)}).")
         if sample_weight is not None:
             weights = np.maximum(np.asarray(sample_weight, dtype=np.float32), np.float32(1e-6))
             if len(weights) != len(probs):
-                raise ValueError(
-                    f"Length of sample_weight ({len(weights)}) does not match X ({len(probs)})."
-                )
+                raise ValueError(f"Length of sample_weight ({len(weights)}) does not match X ({len(probs)}).")
         else:
             weights = np.ones(len(probs), dtype=np.float32)
 
@@ -514,8 +510,7 @@ class GeneRoleClassifier:
             w_sum = np.maximum(w_sum, np.float32(1e-8))
             for c in range(n_classes):
                 cluster_probs[:, c] = (
-                    np.bincount(inv, weights=log_p[:, c] * sub_w, minlength=n_clusters).astype(np.float32)
-                    / w_sum
+                    np.bincount(inv, weights=log_p[:, c] * sub_w, minlength=n_clusters).astype(np.float32) / w_sum
                 )
             max_lp = np.max(cluster_probs, axis=1, keepdims=True)
             exp_lp = np.exp(cluster_probs - max_lp)
@@ -527,8 +522,7 @@ class GeneRoleClassifier:
             w_sum = np.maximum(w_sum, np.float32(1e-8))
             for c in range(n_classes):
                 cluster_probs[:, c] = (
-                    np.bincount(inv, weights=sub_probs[:, c] * sub_w, minlength=n_clusters).astype(np.float32)
-                    / w_sum
+                    np.bincount(inv, weights=sub_probs[:, c] * sub_w, minlength=n_clusters).astype(np.float32) / w_sum
                 )
             row_sums = np.maximum(np.sum(cluster_probs, axis=1, keepdims=True), np.float32(1e-12))
             cluster_probs = (cluster_probs / row_sums).astype(np.float32)
@@ -553,9 +547,7 @@ class GeneRoleClassifier:
         probs = self.predict_proba(X).copy()
         cids = np.asarray(cluster_ids, dtype=np.int64)
         if len(cids) != len(probs):
-            raise ValueError(
-                f"Length of cluster_ids ({len(cids)}) does not match X ({len(probs)})."
-            )
+            raise ValueError(f"Length of cluster_ids ({len(cids)}) does not match X ({len(probs)}).")
         pos_mask = cids > 0
         if not np.any(pos_mask):
             return probs
@@ -642,9 +634,7 @@ class GeneRoleClassifier:
         top_classes = self.classes_[top_indices].astype(out_dtype)
         if min_confidence > 0.0:
             unk = (
-                (int(GeneRole.UNKNOWN) if out_dtype == np.int8 else -1)
-                if unknown_label is None
-                else int(unknown_label)
+                (int(GeneRole.UNKNOWN) if out_dtype == np.int8 else -1) if unknown_label is None else int(unknown_label)
             )
             max_probs = np.max(probs, axis=1)
             return np.where(max_probs >= min_confidence, top_classes, unk).astype(out_dtype)
@@ -774,7 +764,12 @@ class GeneRoleClassifier:
                 class_weight=cw,
             )
             raw_classes = data["classes"]
-            if len(raw_classes) > 0 and int(np.min(raw_classes)) >= -128 and int(np.max(raw_classes)) <= 127 and raw_classes.dtype == np.int8:
+            if (
+                len(raw_classes) > 0
+                and int(np.min(raw_classes)) >= -128
+                and int(np.max(raw_classes)) <= 127
+                and raw_classes.dtype == np.int8
+            ):
                 inst.classes_ = raw_classes.astype(np.int8)
             else:
                 inst.classes_ = raw_classes.astype(np.int64)

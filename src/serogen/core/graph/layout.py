@@ -231,9 +231,7 @@ class LayoutEngine:
     def __post_init__(self) -> None:
         r"""Validate layout hyperparameters."""
         if self.mode not in ("fruchterman_reingold", "fr"):
-            raise ValueError(
-                f"Invalid mode {self.mode!r}. Expected 'fruchterman_reingold' or 'fr'."
-            )
+            raise ValueError(f"Invalid mode {self.mode!r}. Expected 'fruchterman_reingold' or 'fr'.")
         if self.dim < 1:
             raise ValueError(f"dim must be >= 1, got {self.dim}.")
         if self.iterations < 0:
@@ -281,9 +279,7 @@ class LayoutEngine:
         n_nodes = int(adj.shape[0])
 
         center_arr = (
-            np.zeros(self.dim, dtype=np.float64)
-            if self.center is None
-            else np.asarray(self.center, dtype=np.float64)
+            np.zeros(self.dim, dtype=np.float64) if self.center is None else np.asarray(self.center, dtype=np.float64)
         )
         if len(center_arr) != self.dim:
             raise ValueError(f"center length ({len(center_arr)}) must match dim ({self.dim}).")
@@ -396,9 +392,7 @@ class LayoutEngine:
         if pos is not None:
             pos_arr = np.asarray(pos, dtype=np.float64)
             if pos_arr.shape != (n_nodes, self.dim):
-                raise ValueError(
-                    f"pos shape {pos_arr.shape} must match (n_nodes, dim) = ({n_nodes}, {self.dim})."
-                )
+                raise ValueError(f"pos shape {pos_arr.shape} must match (n_nodes, dim) = ({n_nodes}, {self.dim}).")
             return np.ascontiguousarray(pos_arr, dtype=np.float64)
 
         if self.init == "circular":

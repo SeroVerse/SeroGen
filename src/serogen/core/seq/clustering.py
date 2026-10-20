@@ -391,14 +391,7 @@ class Clusterer:
             if roles_arr is not None:
                 r_q = roles_arr[q_idx]
                 r_t = roles_arr[t_idx]
-                compat = (
-                    (r_q == r_t)
-                    | (r_q == 29)
-                    | (r_t == 29)
-                    | (r_q < 0)
-                    | (r_t < 0)
-                    | (alignments.pidents >= 80.0)
-                )
+                compat = (r_q == r_t) | (r_q == 29) | (r_t == 29) | (r_q < 0) | (r_t < 0) | (alignments.pidents >= 80.0)
             else:
                 compat = np.ones(len(q_idx), dtype=np.bool_)
 
@@ -468,7 +461,10 @@ class Clusterer:
                             gq = members_r[sub_q]
                             gt = members_r[sub_t]
                             keep_m = np.array(
-                                [(int(u_i) * n + int(v_i)) not in seeded_pairs for u_i, v_i in zip(gq, gt, strict=False)],
+                                [
+                                    (int(u_i) * n + int(v_i)) not in seeded_pairs
+                                    for u_i, v_i in zip(gq, gt, strict=False)
+                                ],
                                 dtype=np.bool_,
                             )
                             if np.any(keep_m):
@@ -482,7 +478,10 @@ class Clusterer:
                                 gq_e = members_r[eq_idx.astype(np.int32)]
                                 gt_e = members_r[et_idx.astype(np.int32)]
                                 keep_e = np.array(
-                                    [(int(u_i) * n + int(v_i)) not in seeded_pairs for u_i, v_i in zip(gq_e, gt_e, strict=False)],
+                                    [
+                                        (int(u_i) * n + int(v_i)) not in seeded_pairs
+                                        for u_i, v_i in zip(gq_e, gt_e, strict=False)
+                                    ],
                                     dtype=np.bool_,
                                 )
                                 if np.any(keep_e):
@@ -523,7 +522,10 @@ class Clusterer:
                 if len(cand_q) > 0:
                     if seeded_pairs:
                         keep_m = np.array(
-                            [(int(u_i) * n + int(v_i)) not in seeded_pairs for u_i, v_i in zip(cand_q, cand_t, strict=False)],
+                            [
+                                (int(u_i) * n + int(v_i)) not in seeded_pairs
+                                for u_i, v_i in zip(cand_q, cand_t, strict=False)
+                            ],
                             dtype=np.bool_,
                         )
                         cand_q = cand_q[keep_m]
@@ -538,7 +540,10 @@ class Clusterer:
                         gq_e = eq_idx.astype(np.int32)
                         gt_e = et_idx.astype(np.int32)
                         keep_e = np.array(
-                            [(int(u_i) * n + int(v_i)) not in seeded_pairs for u_i, v_i in zip(gq_e, gt_e, strict=False)],
+                            [
+                                (int(u_i) * n + int(v_i)) not in seeded_pairs
+                                for u_i, v_i in zip(gq_e, gt_e, strict=False)
+                            ],
                             dtype=np.bool_,
                         )
                         if np.any(keep_e):

@@ -98,11 +98,7 @@ def build_relational_csr(
     else:
         n_rel = max(int(n_relations), 1)
 
-    v_nodes = (
-        np.asarray(virtual_nodes, dtype=np.int32)
-        if virtual_nodes is not None
-        else np.empty(0, dtype=np.int32)
-    )
+    v_nodes = np.asarray(virtual_nodes, dtype=np.int32) if virtual_nodes is not None else np.empty(0, dtype=np.int32)
 
     if n_nodes == 0 or len(src_arr) == 0:
         return RelationalCSR(
@@ -370,9 +366,7 @@ def mpnn_layer_backward(
         d_msg = np.empty(dim, dtype=np.float32)
         any_active = False
         for d in range(dim):
-            raw_res = (
-                (np.float32(2.0) * pre_norm[v, d]) if is_clamped else pre_norm[v, d]
-            )
+            raw_res = (np.float32(2.0) * pre_norm[v, d]) if is_clamped else pre_norm[v, d]
             act = raw_res - h_in[v, d]
             if act > np.float32(1e-7):
                 d_msg[d] = d_res[d]

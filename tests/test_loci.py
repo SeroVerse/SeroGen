@@ -1720,7 +1720,10 @@ def test_clusterer_motif_rescue_and_mcl_embedding_blending() -> None:
     unrelated = b"MWKLLVLLPLLAASAAAWZAWZAWZAWZAWZAWZA" * 4
 
     seqs = Sequences.from_bytes([flank_a, flank_b, unrelated])
-    roles = np.array([int(GeneRole.GLYCOSYLTRANSFERASE), int(GeneRole.GLYCOSYLTRANSFERASE), int(GeneRole.CAPSULE_ANCHOR)], dtype=np.int32)
+    roles = np.array(
+        [int(GeneRole.GLYCOSYLTRANSFERASE), int(GeneRole.GLYCOSYLTRANSFERASE), int(GeneRole.CAPSULE_ANCHOR)],
+        dtype=np.int32,
+    )
 
     # Without active-site embeddings, min_bitscore=45.0 keeps the ~32-bit twilight-zone pair separate
     c_no_emb = Clusterer(mode="mcl", min_identity=25.0, min_bitscore=45.0).cluster(seqs, roles=roles)
@@ -1779,8 +1782,8 @@ def test_arborescence_edmonds_slot_exclusivity_and_k_best() -> None:
     w_3d = np.full((3, 3, 2), -1e9, dtype=np.float64)
     w_3d[0, 1, 0] = 10.0  # child 1 prefers (parent=0, slot=0)
     w_3d[0, 1, 1] = 6.0
-    w_3d[0, 2, 0] = 9.0   # child 2 also prefers (parent=0, slot=0)
-    w_3d[0, 2, 1] = 8.0   # child 2 on slot=1 gives 10.0 + 8.0 = 18.0
+    w_3d[0, 2, 0] = 9.0  # child 2 also prefers (parent=0, slot=0)
+    w_3d[0, 2, 1] = 8.0  # child 2 on slot=1 gives 10.0 + 8.0 = 18.0
     w_3d[1, 2, 0] = 5.0
     w_3d[2, 1, 0] = 4.0
 

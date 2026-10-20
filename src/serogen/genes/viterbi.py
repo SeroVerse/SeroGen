@@ -759,7 +759,9 @@ def _viterbi_forward(
             path[t, M6r] = p_m6r
 
         # Reverse Insertion States I1r..I6r
-        can_mi_r = (t < 3 or path[t - 3, Sr] != R) and (t < 4 or path[t - 4, Sr] != R) and (t < 5 or path[t - 5, Sr] != R)
+        can_mi_r = (
+            (t < 3 or path[t - 3, Sr] != R) and (t < 4 or path[t - 4, Sr] != R) and (t < 5 or path[t - 5, Sr] != R)
+        )
         for st_idx in range(6):
             istate = I1r + st_idx
             val_ir = alpha[r_prev, istate] - ii_step

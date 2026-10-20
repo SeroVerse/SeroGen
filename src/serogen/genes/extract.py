@@ -652,7 +652,13 @@ def _scan_window_genes(
                         up_ll = 0.0
                         while start_old >= 1 + s + 35:
                             pos = start_old - 1 - s
-                            if include_phage and s > 0 and prev_local_e > 0 and start_old - 1 >= prev_local_e - 36 and pos < prev_local_e - 60:
+                            if (
+                                include_phage
+                                and s > 0
+                                and prev_local_e > 0
+                                and start_old - 1 >= prev_local_e - 36
+                                and pos < prev_local_e - 60
+                            ):
                                 break
                             tri = int(tri_arr[pos])
                             if (s > 0 if include_phage else True) and stop_mask_64[tri]:
@@ -675,7 +681,12 @@ def _scan_window_genes(
                                 if s == 0 or score < e_save:
                                     e_save = score
                                     s_save = s
-                            elif include_phage and s > 0 and up_ll > 7.0 and (tri == 30 or tri == 15 or tri == 13 or tri == 12):
+                            elif (
+                                include_phage
+                                and s > 0
+                                and up_ll > 7.0
+                                and (tri == 30 or tri == 15 or tri == 13 or tri == 12)
+                            ):
                                 cg_b = int(cg_bins[pos])
                                 utr_start = pos - 30
                                 freq_sum = 0.0
@@ -874,7 +885,12 @@ def _scan_window_genes(
                             if s == 0 or score < e_save:
                                 e_save = score
                                 s_save = s
-                        elif include_phage and s > 0 and up_ll > 7.0 and (tri == 18 or tri == 3 or tri == 35 or tri == 51):
+                        elif (
+                            include_phage
+                            and s > 0
+                            and up_ll > 7.0
+                            and (tri == 18 or tri == 3 or tri == 35 or tri == 51)
+                        ):
                             cg_b = int(cg_bins[pos])
                             utr_start = pos - 30
                             freq_sum = 0.0

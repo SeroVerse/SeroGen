@@ -159,7 +159,7 @@ def _(FastaReader, Path, mo, np, re, urllib):
         f"""
         # Single-Pass Bacterial & Prophage ORF Prediction Benchmark
         **Reference Genome**: *Escherichia coli* str. K-12 substr. MG1655 (`GenBank: CP014225.1`, **{genome_len:,} bp**)<br>
-        **Intact Reference CDSs**: **{len(ref_cds):,}** total (**{sum(c['region'] != 'Host' for c in ref_cds)}** across 9 structurally embedded prophages, **{sum(c['region'] == 'Host' for c in ref_cds):,}** host chromosome)
+        **Intact Reference CDSs**: **{len(ref_cds):,}** total (**{sum(c["region"] != "Host" for c in ref_cds)}** across 9 structurally embedded prophages, **{sum(c["region"] == "Host" for c in ref_cds):,}** host chromosome)
         """
     )
     return PROPHAGES, cache_dir, fa_path, gb_path, genome_len, genome_seq, raw_bytes, ref_cds
@@ -252,25 +252,22 @@ def _(GeneticCode, OrfPredictor, genome_len, genome_seq, np, raw_bytes, ref_cds,
         _c["phage_exact_hit"] = _key in phage_exact
 
     # Aggregate metrics per prophage, all prophages combined, and host chromosome
-    region_groups = (
-        [(p[0], p[1], p[2], p[3], [c for c in ref_cds if c["region"] == p[0]]) for p in PROPHAGES]
-        + [
-            (
-                "All Prophages (9)",
-                0,
-                0,
-                "All 9 structurally embedded prophages combined",
-                [c for c in ref_cds if c["region"] != "Host"],
-            ),
-            (
-                "Host Chromosome",
-                0,
-                genome_len,
-                "Non-prophage E. coli K-12 MG1655 chromosome",
-                [c for c in ref_cds if c["region"] == "Host"],
-            ),
-        ]
-    )
+    region_groups = [(p[0], p[1], p[2], p[3], [c for c in ref_cds if c["region"] == p[0]]) for p in PROPHAGES] + [
+        (
+            "All Prophages (9)",
+            0,
+            0,
+            "All 9 structurally embedded prophages combined",
+            [c for c in ref_cds if c["region"] != "Host"],
+        ),
+        (
+            "Host Chromosome",
+            0,
+            genome_len,
+            "Non-prophage E. coli K-12 MG1655 chromosome",
+            [c for c in ref_cds if c["region"] == "Host"],
+        ),
+    ]
 
     region_metrics = []
     region_chart_rows = []
@@ -282,14 +279,20 @@ def _(GeneticCode, OrfPredictor, genome_len, genome_seq, np, raw_bytes, ref_cds,
         _p_ex = sum(c["phage_exact_hit"] for c in _rcds)
         if _re > _rs:
             _sub = raw_bytes[_rs:_re]
-            _gc_pct = float(np.sum((_sub == ord("G")) | (_sub == ord("C")) | (_sub == ord("g")) | (_sub == ord("c")))) * 100.0 / len(_sub)
+            _gc_pct = (
+                float(np.sum((_sub == ord("G")) | (_sub == ord("C")) | (_sub == ord("g")) | (_sub == ord("c"))))
+                * 100.0
+                / len(_sub)
+            )
         else:
             _gc_pct = 45.8
         region_metrics.append(
             {
                 "region": _rname,
                 "description": _rdesc,
-                "span_kb": round((_re - _rs) / 1000.0, 1) if _re > _rs else round(sum(p[2] - p[1] for p in PROPHAGES) / 1000.0, 1),
+                "span_kb": round((_re - _rs) / 1000.0, 1)
+                if _re > _rs
+                else round(sum(p[2] - p[1] for p in PROPHAGES) / 1000.0, 1),
                 "gc_pct": round(_gc_pct, 1),
                 "n_cds": _n,
                 "base_stop_recall": round(_b_stop / _n * 100.0, 1),
@@ -350,7 +353,9 @@ def _(PROPHAGES, alt, genome_len, mo, np, raw_bytes, ref_cds, region_chart_rows,
         alt.Chart(alt.Data(values=region_chart_rows))
         .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
         .encode(
-            x=alt.X("region:N", sort=_region_order, title="Genomic Region / Prophage Island", axis=alt.Axis(labelAngle=-30)),
+            x=alt.X(
+                "region:N", sort=_region_order, title="Genomic Region / Prophage Island", axis=alt.Axis(labelAngle=-30)
+            ),
             xOffset=alt.XOffset("model:N"),
             y=alt.Y("recall_pct:Q", title="CDS Recall (%)", scale=alt.Scale(domain=[0, 105])),
             color=alt.Color(
@@ -370,12 +375,16 @@ def _(PROPHAGES, alt, genome_len, mo, np, raw_bytes, ref_cds, region_chart_rows,
                 alt.Tooltip("n_cds:Q", title="Reference CDS Count"),
             ],
         )
-        .properties(width=420, height=300, title="Prophage & Host CDS Recall: Baseline vs. Single-Pass Phage-Aware OrfPredictor")
+        .properties(
+            width=420, height=300, title="Prophage & Host CDS Recall: Baseline vs. Single-Pass Phage-Aware OrfPredictor"
+        )
     )
 
     # Chart 2: Sliding 4-kb GC Profile Across CP014225.1 with Embedded Prophage Islands Highlighted
     _step = 4000
-    _is_gc = ((raw_bytes == ord("G")) | (raw_bytes == ord("C")) | (raw_bytes == ord("g")) | (raw_bytes == ord("c"))).astype(np.int32)
+    _is_gc = (
+        (raw_bytes == ord("G")) | (raw_bytes == ord("C")) | (raw_bytes == ord("g")) | (raw_bytes == ord("c"))
+    ).astype(np.int32)
     _prefix = np.concatenate([[0], np.cumsum(_is_gc)])
     _gc_points = []
     for _pos in range(0, genome_len - _step, _step):
@@ -445,13 +454,10 @@ def _(PROPHAGES, alt, genome_len, mo, np, raw_bytes, ref_cds, region_chart_rows,
             text="prophage:N",
         )
     )
-    chart_gc_profile = (
-        (_band_rects + _gc_line + _gc_phage_pts + _band_labels)
-        .properties(
-            width=880,
-            height=250,
-            title="Sliding 4-kb Local GC Adaptation Across E. coli K-12 (CP014225.1) Highlighting AT-Rich Prophage Islands",
-        )
+    chart_gc_profile = (_band_rects + _gc_line + _gc_phage_pts + _band_labels).properties(
+        width=880,
+        height=250,
+        title="Sliding 4-kb Local GC Adaptation Across E. coli K-12 (CP014225.1) Highlighting AT-Rich Prophage Islands",
     )
 
     # Chart 3: Recall by Prophage ORF Length Bin and Operon Overlap Type
@@ -558,7 +564,11 @@ def _(PROPHAGES, alt, genome_len, mo, np, raw_bytes, ref_cds, region_chart_rows,
                 alt.Tooltip("predicted_orfs:Q", title="Predicted ORFs"),
             ],
         )
-        .properties(width=880, height=200, title="Single-Pass Decoding Throughput Across Bacterial & Viral Genetic Codes (4.66 Mb Genome)")
+        .properties(
+            width=880,
+            height=200,
+            title="Single-Pass Decoding Throughput Across Bacterial & Viral Genetic Codes (4.66 Mb Genome)",
+        )
     )
 
     mo.vstack([chart_recall, chart_gc_profile, chart_stratified, chart_throughput])
