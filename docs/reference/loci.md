@@ -2,10 +2,6 @@
 
 Biosynthetic locus archetypes, exact All-Contiguous-Partitions Dynamic Programming (ACP-DP) locus segmentation, cross-contig boundary stitching, and bipartite reference serotype matching.
 
-::: serogen.loci
-    options:
-      members: false
-
 ---
 
 ## High-Level Locus Prediction (`serogen.loci.predictor`)

@@ -155,7 +155,7 @@ class Gene:
 
     Attributes:
         interval (Interval): Genomic interval coordinate ([`Interval`][serogen.core.interval.Interval]).
-        seq (Sequence | None): Coding nucleotide or protein sequence ([`Sequence`][serogen.core.seq.Sequence]).
+        seq (Sequence | None): Coding nucleotide or protein sequence ([`Sequence`][serogen.core.seq.seq.Sequence]).
         contig_index (int): 0-based contig index offset corresponding to parent contig name.
         indels (IndelRecord): Scalar frameshift indel record ([`IndelRecord`][serogen.genes.models.IndelRecord]).
         is_partial (bool): True if the ORF is truncated at a contig boundary without a start or stop codon.
@@ -181,7 +181,7 @@ class Genes(BatchedContainer[Gene, "Genes"]):
         intervals (Intervals): Genomic interval coordinates for predicted ORFs
             ([`Intervals`][serogen.core.interval.Intervals]).
         seqs (Sequences): In-frame coding nucleotide sequences oriented 5' to 3'
-            ([`Sequences`][serogen.core.seq.Sequences]).
+            ([`Sequences`][serogen.core.seq.seq.Sequences]).
         contig_indices (np.ndarray[tuple[int], np.dtype[np.uint32]]): 1D array of 0-based contig index
             offsets corresponding to parent contig names.
         indels (Indels): Ragged frameshift indel records.

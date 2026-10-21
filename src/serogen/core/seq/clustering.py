@@ -184,7 +184,7 @@ class Clusters(RaggedArrayContainer[Cluster, "Clusters"]):
         r"""Extract the representative centroid sequences from the source collection.
 
         Args:
-            seqs: Source [`Sequences`][serogen.core.seq.Sequences] collection.
+            seqs: Source [`Sequences`][serogen.core.seq.seq.Sequences] collection.
 
         Returns:
             Sequences: Sliced collection containing only cluster centroids.

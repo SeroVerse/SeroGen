@@ -19,14 +19,12 @@ class OrfPredictor:
     r"""High-performance Open Reading Frame (ORF) predictor.
 
     Executes Numba JIT-compiled FragGeneScan HMM decoding over single sequences,
-    [`Sequences`][serogen.core.seq.Sequences], or [`GenomeAssembly`][serogen.core.genome.GenomeAssembly]
+    [`Sequences`][serogen.core.seq.seq.Sequences], or [`GenomeAssembly`][serogen.core.genome.GenomeAssembly]
     containers using a unified flat window table and Numba `prange` parallelism, returning
     batched [`Genes`][serogen.genes.models.Genes]. Supports bacterial and viral/phage translation
     tables and single-pass co-prediction of bacterial and prophage/phage ORFs.
 
     Attributes:
-        whole_genome (bool): Flag indicating complete genome mode (with start codon refinement)
-            or fragmented / short-read mode.
         model (HMM): Baked HMM model parameter container.
         genetic_code (GeneticCode): Translation table defining start/stop codons and amino acid mappings.
         include_phage (bool): If True, enables single-pass phage/prophage ORF co-prediction
@@ -37,19 +35,17 @@ class OrfPredictor:
 
     def __init__(
         self,
-        whole_genome: bool = False,
         model: HMM | None = None,
         window_size: int = 50_000,
         overlap: int = 5_000,
         genetic_code: GeneticCode | int | str = GeneticCode.bacterial,
-        include_phage: bool = True,
+        include_phage: bool = False,
         min_gene_len: int | None = None,
         local_gc_window: int = 4_000,
     ) -> None:
         r"""Initialize an [`OrfPredictor`][serogen.genes.orf.predictor.OrfPredictor] instance.
 
         Args:
-            whole_genome (bool): If True, enables whole genome gene finder mode. Defaults to False.
             model (HMM | None): Optional custom HMM parameters. If None, uses default baked model.
             window_size (int): Size in base pairs for local GC-adaptive sliding windows on long contigs.
                 Set to 0 to disable windowing. Defaults to 50_000.
@@ -58,14 +54,12 @@ class OrfPredictor:
             genetic_code (GeneticCode | int | str): Translation table (instance, NCBI table ID, or name).
                 Defaults to `GeneticCode.bacterial` (Table 11).
             include_phage (bool): If True, enables single-pass bacterial + phage ORF co-prediction.
-                Defaults to True.
+                Defaults to False.
             min_gene_len (int | None): Optional minimum ORF length threshold in base pairs. If None,
-                defaults to 90 bp in phage-aware whole-genome mode, 120 bp in bacterial-only
-                whole-genome mode, or 60 bp in fragmented mode.
+                defaults to 90 bp when `include_phage=True` or 210 bp when `include_phage=False`.
             local_gc_window (int): Sliding window size in base pairs for local GC bin adaptation
                 when `include_phage=True`. Defaults to 4_000.
         """
-        self.whole_genome = whole_genome
         self.model = model if model is not None else get_hmm_model()
         self.window_size = window_size
         self.overlap = overlap
@@ -76,7 +70,7 @@ class OrfPredictor:
         if min_gene_len is not None:
             self.min_gene_len = int(min_gene_len)
         else:
-            self.min_gene_len = (90 if include_phage else 120) if whole_genome else 60
+            self.min_gene_len = 90 if include_phage else 210
         self.local_gc_window = int(local_gc_window)
 
     def _predict_flat_batch(
@@ -90,7 +84,7 @@ class OrfPredictor:
         if n_contigs == 0 or len(flat_seqs) == 0:
             return Genes.empty()
 
-        min_contig_len = self.min_gene_len if self.whole_genome else min(self.min_gene_len, 60)
+        min_contig_len = min(self.min_gene_len, 60)
         win_table = _build_window_table(
             contig_offsets,
             contig_lengths,
@@ -137,7 +131,6 @@ class OrfPredictor:
             encode_lut,
             lut_rc,
             win_table,
-            self.whole_genome,
             self.include_phage,
             self.min_gene_len,
             self.local_gc_window,
@@ -199,7 +192,6 @@ class OrfPredictor:
             lut_rc,
             win_table,
             win_offsets,
-            self.whole_genome,
             self.include_phage,
             self.min_gene_len,
             score_params,

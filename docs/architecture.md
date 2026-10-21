@@ -2,9 +2,9 @@
 
 **SeroGen** is organized into three strictly layered packages designed for maximum throughput, vectorized memory locality, and zero external binary dependencies:
 
-1. **[`serogen.core`][serogen.core]** — Structure-of-Arrays (SoA) container protocols, sequence/alphabet kernels, k-mer/randstrobe indices, banded Smith-Waterman-Gotoh pairwise alignment, MCL/Leiden protein clustering, and bipartite graph alignment.
-2. **[`serogen.genes`][serogen.genes]** — Single-pass profile-HMM Viterbi ORF prediction (supporting bacterial, viral/prophage, and mycoplasma translation tables) and multi-scale 1D CNN functional role classification.
-3. **[`serogen.loci`][serogen.loci]** — Biosynthetic archetype ontologies, exact All-Contiguous-Partitions Dynamic Programming (ACP-DP) locus segmentation, cross-contig boundary stitching, and reference serotype matching.
+1. **[`serogen.core`](reference/core.md)** — Structure-of-Arrays (SoA) container protocols, sequence/alphabet kernels, k-mer/randstrobe indices, banded Smith-Waterman-Gotoh pairwise alignment, MCL/Leiden protein clustering, and bipartite graph alignment.
+2. **[`serogen.genes`](reference/genes.md)** — Single-pass profile-HMM Viterbi ORF prediction (supporting bacterial, viral/prophage, and mycoplasma translation tables) and multi-scale 1D CNN functional role classification.
+3. **[`serogen.loci`](reference/loci.md)** — Biosynthetic archetype ontologies, exact All-Contiguous-Partitions Dynamic Programming (ACP-DP) locus segmentation, cross-contig boundary stitching, and reference serotype matching.
 
 ---
 

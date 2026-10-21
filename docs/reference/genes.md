@@ -2,10 +2,6 @@
 
 Single-pass bacterial and prophage Open Reading Frame (ORF) prediction, functional gene role ontology, and multi-channel 1D CNN protein classification.
 
-::: serogen.genes
-    options:
-      members: false
-
 ---
 
 ## ORF Prediction (`serogen.genes.orf.predictor`)

@@ -18,7 +18,7 @@ Each notebook is configured with a native **16:9 Marimo slide layout** (`scripts
 
     ---
 
-    Multi-source reference curation (`3,996` non-redundant proteins), 20-trial Optuna TPE hyperparameter optimization, and held-out validation (`92.10%` accuracy / `91.97%` Macro F1) across all 29 functional `GeneRole`s (`src/serogen/data/model.npz`).
+    Multi-source reference curation (`3,996` non-redundant proteins), 20-trial Optuna TPE hyperparameter optimization, 9-layer representation sweep, and held-out validation (`90.23%` accuracy / `90.19%` Macro F1) across all 29 functional `GeneRole`s (`src/serogen/data/model.npz`).
 
     [:octicons-arrow-right-24: Explore Classifier Deck](gene-classifier.md)
 

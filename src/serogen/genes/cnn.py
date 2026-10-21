@@ -65,7 +65,6 @@ class GeneRoleClassifier:
         weight_decay: float = 1e-4,
         random_state: int | None = None,
         class_weight: str | None = "balanced",
-        spatial_zones: int = 1,
     ) -> None:
         """Initialize the `GeneRoleClassifier` with architecture and optimizer hyperparameters."""
         self.vocab_size = vocab_size
@@ -78,7 +77,6 @@ class GeneRoleClassifier:
         self.weight_decay = weight_decay
         self.random_state = random_state
         self.class_weight = class_weight
-        self.spatial_zones = int(spatial_zones)
 
     @property
     def is_fitted(self) -> bool:
@@ -98,8 +96,7 @@ class GeneRoleClassifier:
         """Dimensionality of the penultimate 1D-CNN + global composition feature vector."""
         if getattr(self, "dense_w_", None) is not None:
             return int(self.dense_w_.shape[0])
-        base_dim = 2 * int(self.num_filters) + 2 + int(self.vocab_size)
-        return base_dim + 4 * int(self.num_filters) if getattr(self, "spatial_zones", 1) >= 2 else base_dim
+        return 2 * int(self.num_filters) + 2 + int(self.vocab_size)
 
     def _pack_ragged(
         self,
@@ -250,8 +247,7 @@ class GeneRoleClassifier:
                 self.conv_w_[oc, :, :k_width] = rng.normal(0.0, std, (self.embed_dim, k_width)).astype(np.float32)
             self.conv_b_ = np.zeros(self.num_filters, dtype=np.float32)
 
-        base_dim = 2 * self.num_filters + 2 + self.vocab_size
-        feat_dim = base_dim + 4 * self.num_filters if getattr(self, "spatial_zones", 1) >= 2 else base_dim
+        feat_dim = 2 * self.num_filters + 2 + self.vocab_size
         cnn_feat_dim = 2 * self.num_filters
         self.dense_w_ = np.zeros((feat_dim, n_classes), dtype=np.float32)
         self.dense_w_[:cnn_feat_dim, :] = rng.normal(
@@ -259,12 +255,6 @@ class GeneRoleClassifier:
             np.sqrt(2.0 / cnn_feat_dim),
             (cnn_feat_dim, n_classes),
         ).astype(np.float32)
-        if feat_dim > base_dim:
-            self.dense_w_[base_dim:, :] = rng.normal(
-                0.0,
-                np.sqrt(0.5 / cnn_feat_dim),
-                (4 * self.num_filters, n_classes),
-            ).astype(np.float32)
         self.dense_b_ = np.zeros(n_classes, dtype=np.float32)
 
         x_flat, offsets = self._pack_ragged(X)
@@ -483,7 +473,6 @@ class GeneRoleClassifier:
 
         cw_flag = 1 if self.class_weight == "balanced" else 0
         first_k = int(self.k_sizes_[0])
-        sz = int(getattr(self, "spatial_zones", 1))
         meta = np.array(
             [
                 self.vocab_size,
@@ -493,7 +482,6 @@ class GeneRoleClassifier:
                 self.batch_size,
                 self.epochs,
                 cw_flag,
-                sz,
             ],
             dtype=np.int64,
         )
@@ -531,7 +519,6 @@ class GeneRoleClassifier:
             float_meta = data["float_meta"]
             rs = None if float_meta[2] < 0 else int(float_meta[2])
             cw = "balanced" if (len(meta) > 6 and meta[6] == 1) else None
-            sz = int(meta[7]) if len(meta) > 7 else 1
 
             num_filters = int(meta[2])
             if "k_sizes" in data:
@@ -553,7 +540,6 @@ class GeneRoleClassifier:
                 weight_decay=float(float_meta[1]),
                 random_state=rs,
                 class_weight=cw,
-                spatial_zones=sz,
             )
             raw_classes = data["classes"]
             if (
@@ -570,8 +556,6 @@ class GeneRoleClassifier:
             inst.conv_b_ = data["conv_b"].astype(np.float32)
             inst.dense_w_ = data["dense_w"].astype(np.float32)
             inst.dense_b_ = data["dense_b"].astype(np.float32)
-            if inst.dense_w_.shape[0] >= 6 * num_filters + 2 + int(meta[0]):
-                inst.spatial_zones = 2
             inst.k_sizes_ = k_sizes
             inst.unique_ks_ = np.unique(k_sizes).astype(np.int32)
             inst.k_indices_ = np.array(
@@ -620,11 +604,10 @@ def _extract_features_batch(
     k_sizes: np.ndarray,
     feat_dim: int,
 ) -> np.ndarray:
-    """Extract penultimate 1D-CNN dual-pooling (+ optional N/C-half zones) + global AA composition features."""
+    """Extract penultimate 1D-CNN dual-pooling + global AA composition features `(n_samples, feat_dim)`."""
     n_samples = len(offsets) - 1
     vocab_size, max_k, out_channels = lut.shape
     base_dim = 2 * out_channels + 2 + vocab_size
-    has_zones = feat_dim >= base_dim + 4 * out_channels
     features_out = np.zeros((n_samples, feat_dim), dtype=np.float32)
 
     for i in prange(n_samples):
@@ -634,10 +617,6 @@ def _extract_features_batch(
 
         max_val = np.zeros(out_channels, dtype=np.float32)
         sum_val = np.zeros(out_channels, dtype=np.float32)
-        max_n = np.zeros(out_channels, dtype=np.float32)
-        sum_n = np.zeros(out_channels, dtype=np.float32)
-        max_c = np.zeros(out_channels, dtype=np.float32)
-        sum_c = np.zeros(out_channels, dtype=np.float32)
         val = np.empty(out_channels, dtype=np.float32)
         tok_counts = np.zeros(vocab_size, dtype=np.float32)
 
@@ -661,22 +640,12 @@ def _extract_features_batch(
                     val[oc] += lut[tok, k, oc]
 
             for oc in range(out_channels):
-                kw = int(k_sizes[oc])
-                if kw <= rem:
+                if k_sizes[oc] <= rem:
                     v = val[oc]
                     if v > np.float32(0.0):
                         sum_val[oc] += v
                         if v > max_val[oc]:
                             max_val[oc] = v
-                        if has_zones:
-                            if pos <= rem - kw:
-                                sum_n[oc] += v
-                                if v > max_n[oc]:
-                                    max_n[oc] = v
-                            else:
-                                sum_c[oc] += v
-                                if v > max_c[oc]:
-                                    max_c[oc] = v
 
         len_safe = max(float(seq_len), 1.0)
         features_out[i, 2 * out_channels] = np.float32(np.log(len_safe) / 7.0)
@@ -692,19 +661,6 @@ def _extract_features_batch(
                 out_len = seq_len - k_width + 1
                 features_out[i, oc] = max_val[oc]
                 features_out[i, out_channels + oc] = sum_val[oc] / np.float32(out_len)
-                if has_zones:
-                    n_len = (out_len + 1) // 2
-                    c_len = out_len - n_len
-                    features_out[i, base_dim + oc] = np.float32(0.5) * max_n[oc]
-                    if n_len > 0:
-                        features_out[i, base_dim + out_channels + oc] = (np.float32(0.5) / np.float32(n_len)) * sum_n[
-                            oc
-                        ]
-                    features_out[i, base_dim + 2 * out_channels + oc] = np.float32(0.5) * max_c[oc]
-                    if c_len > 0:
-                        features_out[i, base_dim + 3 * out_channels + oc] = (
-                            np.float32(0.5) / np.float32(c_len)
-                        ) * sum_c[oc]
 
     return features_out
 
@@ -798,7 +754,6 @@ def _train_adam(
     n_classes = len(dense_b)
     vocab_size, embed_dim = embedding.shape
     base_dim = 2 * out_channels + 2 + vocab_size
-    has_zones = feat_dim >= base_dim + 4 * out_channels
 
     m_emb = np.zeros_like(embedding)
     v_emb = np.zeros_like(embedding)
@@ -812,8 +767,8 @@ def _train_adam(
     v_db = np.zeros_like(dense_b)
 
     eff_bs = max(1, min(batch_size, n_samples))
-    grad_emb_batch = np.zeros((eff_bs, vocab_size, embed_dim), dtype=np.float32)
-    grad_cw_batch = np.zeros((eff_bs, out_channels, in_channels, max_k), dtype=np.float32)
+    grad_lut_batch = np.zeros((eff_bs, out_channels, max_k, vocab_size), dtype=np.float32)
+    grad_lut = np.zeros((out_channels, max_k, vocab_size), dtype=np.float32)
     grad_cb_batch = np.zeros((eff_bs, out_channels), dtype=np.float32)
     grad_dw_batch = np.zeros((eff_bs, feat_dim, n_classes), dtype=np.float32)
     grad_db_batch = np.zeros((eff_bs, n_classes), dtype=np.float32)
@@ -836,8 +791,7 @@ def _train_adam(
             curr_bs = b_end - b_start
 
             for b in prange(curr_bs):
-                grad_emb_batch[b].fill(0.0)
-                grad_cw_batch[b].fill(0.0)
+                grad_lut_batch[b].fill(0.0)
                 grad_cb_batch[b].fill(0.0)
                 grad_dw_batch[b].fill(0.0)
                 grad_db_batch[b].fill(0.0)
@@ -854,12 +808,6 @@ def _train_adam(
                 max_val = np.zeros(out_channels, dtype=np.float32)
                 sum_val = np.zeros(out_channels, dtype=np.float32)
                 argmax_pos = np.full(out_channels, -1, dtype=np.int32)
-                max_n = np.zeros(out_channels, dtype=np.float32)
-                sum_n = np.zeros(out_channels, dtype=np.float32)
-                argmax_n = np.full(out_channels, -1, dtype=np.int32)
-                max_c = np.zeros(out_channels, dtype=np.float32)
-                sum_c = np.zeros(out_channels, dtype=np.float32)
-                argmax_c = np.full(out_channels, -1, dtype=np.int32)
                 val = np.empty(out_channels, dtype=np.float32)
                 active_mask = np.zeros((seq_len, out_channels), dtype=np.uint8)
                 tok_counts = np.zeros(vocab_size, dtype=np.float32)
@@ -884,8 +832,7 @@ def _train_adam(
                             val[oc] += lut[tok, k, oc]
 
                     for oc in range(out_channels):
-                        kw = int(k_sizes[oc])
-                        if kw <= rem:
+                        if k_sizes[oc] <= rem:
                             v = val[oc]
                             if v > np.float32(0.0):
                                 active_mask[pos, oc] = 1
@@ -893,17 +840,6 @@ def _train_adam(
                                 if v > max_val[oc]:
                                     max_val[oc] = v
                                     argmax_pos[oc] = pos
-                                if has_zones:
-                                    if pos <= rem - kw:
-                                        sum_n[oc] += v
-                                        if v > max_n[oc]:
-                                            max_n[oc] = v
-                                            argmax_n[oc] = pos
-                                    else:
-                                        sum_c[oc] += v
-                                        if v > max_c[oc]:
-                                            max_c[oc] = v
-                                            argmax_c[oc] = pos
 
                 if feat_dim >= base_dim:
                     h[2 * out_channels + 1] = np.float32(len_safe / 1000.0)
@@ -917,15 +853,6 @@ def _train_adam(
                         out_len = seq_len - k_width + 1
                         h[oc] = max_val[oc]
                         h[out_channels + oc] = sum_val[oc] / np.float32(out_len)
-                        if has_zones:
-                            n_len = (out_len + 1) // 2
-                            c_len = out_len - n_len
-                            h[base_dim + oc] = np.float32(0.5) * max_n[oc]
-                            if n_len > 0:
-                                h[base_dim + out_channels + oc] = (np.float32(0.5) / np.float32(n_len)) * sum_n[oc]
-                            h[base_dim + 2 * out_channels + oc] = np.float32(0.5) * max_c[oc]
-                            if c_len > 0:
-                                h[base_dim + 3 * out_channels + oc] = (np.float32(0.5) / np.float32(c_len)) * sum_c[oc]
 
                 logits = np.empty(n_classes, dtype=np.float32)
                 max_logit = np.float32(-1e30)
@@ -965,37 +892,16 @@ def _train_adam(
                     if seq_len < k_width:
                         continue
                     out_len = seq_len - k_width + 1
-                    n_len = (out_len + 1) // 2
-                    c_len = out_len - n_len
                     d_avg_step = d_h[out_channels + oc] / np.float32(out_len)
                     d_max_oc = d_h[oc]
                     max_p = int(argmax_pos[oc])
-                    d_avg_n = (
-                        (np.float32(0.5) / np.float32(n_len)) * d_h[base_dim + out_channels + oc]
-                        if (has_zones and n_len > 0)
-                        else np.float32(0.0)
-                    )
-                    d_avg_c = (
-                        (np.float32(0.5) / np.float32(c_len)) * d_h[base_dim + 3 * out_channels + oc]
-                        if (has_zones and c_len > 0)
-                        else np.float32(0.0)
-                    )
-                    d_max_n = np.float32(0.5) * d_h[base_dim + oc] if has_zones else np.float32(0.0)
-                    d_max_c = np.float32(0.5) * d_h[base_dim + 2 * out_channels + oc] if has_zones else np.float32(0.0)
-                    max_pn = int(argmax_n[oc])
-                    max_pc = int(argmax_c[oc])
 
                     for pos in range(out_len):
                         d_val = np.float32(0.0)
                         if active_mask[pos, oc] != 0:
-                            d_val += d_avg_step + (d_avg_n if pos < n_len else d_avg_c)
+                            d_val += d_avg_step
                         if pos == max_p and h[oc] > np.float32(0.0):
                             d_val += d_max_oc
-                        if has_zones:
-                            if pos == max_pn and max_n[oc] > np.float32(0.0):
-                                d_val += d_max_n
-                            if pos == max_pc and max_c[oc] > np.float32(0.0):
-                                d_val += d_max_c
 
                         if d_val != np.float32(0.0):
                             grad_cb_batch[b, oc] += d_val
@@ -1003,9 +909,7 @@ def _train_adam(
                                 tok = int(sequences_flat[start + pos + k])
                                 if tok < 0 or tok >= vocab_size:
                                     tok = vocab_size - 1
-                                for ic in range(in_channels):
-                                    grad_cw_batch[b, oc, ic, k] += d_val * embedding[tok, ic]
-                                    grad_emb_batch[b, tok, ic] += d_val * conv_w[oc, ic, k]
+                                grad_lut_batch[b, oc, k, tok] += d_val
 
             for b in range(curr_bs):
                 epoch_loss += float(sample_losses[b])
@@ -1037,24 +941,13 @@ def _train_adam(
             global_wd = weight_decay * 5.0 if weight_decay * 5.0 > 2e-3 else 2e-3
             global_wd_factor = np.float32(1.0) - lr_epoch * np.float32(global_wd)
             global_step_size = step_size * np.float32(0.15)
-            for j in range(feat_dim):
-                if (
-                    j < out_channels
-                    or (base_dim <= j < base_dim + out_channels)
-                    or (base_dim + 2 * out_channels <= j < base_dim + 3 * out_channels)
-                ):
-                    eff_wd = wd_factor
-                    eff_step = step_size
-                elif (
-                    j < 2 * out_channels
-                    or (base_dim + out_channels <= j < base_dim + 2 * out_channels)
-                    or (base_dim + 3 * out_channels <= j < base_dim + 4 * out_channels)
-                ):
-                    eff_wd = avg_wd_factor
-                    eff_step = avg_step_size
+            for j in prange(feat_dim):
+                if j < out_channels:
+                    eff_wd, eff_step = wd_factor, step_size
+                elif j < 2 * out_channels:
+                    eff_wd, eff_step = avg_wd_factor, avg_step_size
                 else:
-                    eff_wd = global_wd_factor
-                    eff_step = global_step_size
+                    eff_wd, eff_step = global_wd_factor, global_step_size
                 for c in range(n_classes):
                     g_sum = np.float32(0.0)
                     for b in range(curr_bs):
@@ -1065,22 +958,45 @@ def _train_adam(
                     dense_w[j, c] = dense_w[j, c] * eff_wd - eff_step * m_dw[j, c] / (np.sqrt(v_dw[j, c]) + eps)
 
             if bb_lr_scale > np.float32(0.0):
-                for oc in range(out_channels):
-                    g_sum = np.float32(0.0)
+                for oc in prange(out_channels):
+                    g_cb_sum = np.float32(0.0)
                     for b in range(curr_bs):
-                        g_sum += grad_cb_batch[b, oc]
-                    g = g_sum * inv_bc
-                    m_cb[oc] = beta1 * m_cb[oc] + (np.float32(1.0) - beta1) * g
-                    v_cb[oc] = beta2 * v_cb[oc] + (np.float32(1.0) - beta2) * g * g
+                        g_cb_sum += grad_cb_batch[b, oc]
+                    g_cb = g_cb_sum * inv_bc
+                    m_cb[oc] = beta1 * m_cb[oc] + (np.float32(1.0) - beta1) * g_cb
+                    v_cb[oc] = beta2 * v_cb[oc] + (np.float32(1.0) - beta2) * g_cb * g_cb
                     conv_b[oc] -= bb_step_size * m_cb[oc] / (np.sqrt(v_cb[oc]) + eps)
 
-                for oc in range(out_channels):
+                    k_width = int(k_sizes[oc])
+                    for k in range(k_width):
+                        for tok in range(vocab_size):
+                            s_lut = np.float32(0.0)
+                            for b in range(curr_bs):
+                                s_lut += grad_lut_batch[b, oc, k, tok]
+                            grad_lut[oc, k, tok] = s_lut
+
+                # Contract grad_lut with current embedding and conv_w before modifying embedding in-place
+                grad_emb_cur = np.zeros((vocab_size, embed_dim), dtype=np.float32)
+                tok_active_arr = np.zeros(vocab_size, dtype=np.uint8)
+                for tok in range(vocab_size):
+                    is_act = np.uint8(0)
+                    for oc in range(out_channels):
+                        k_width = int(k_sizes[oc])
+                        for k in range(k_width):
+                            gl = grad_lut[oc, k, tok]
+                            if gl != np.float32(0.0):
+                                is_act = np.uint8(1)
+                                for ic in range(embed_dim):
+                                    grad_emb_cur[tok, ic] += gl * conv_w[oc, ic, k]
+                    tok_active_arr[tok] = is_act
+
+                for oc in prange(out_channels):
                     k_width = int(k_sizes[oc])
                     for ic in range(in_channels):
                         for k in range(k_width):
                             g_sum = np.float32(0.0)
-                            for b in range(curr_bs):
-                                g_sum += grad_cw_batch[b, oc, ic, k]
+                            for tok in range(vocab_size):
+                                g_sum += grad_lut[oc, k, tok] * embedding[tok, ic]
                             g = g_sum * inv_bc
                             m_cw[oc, ic, k] = beta1 * m_cw[oc, ic, k] + (np.float32(1.0) - beta1) * g
                             v_cw[oc, ic, k] = beta2 * v_cw[oc, ic, k] + (np.float32(1.0) - beta2) * g * g
@@ -1089,14 +1005,9 @@ def _train_adam(
                             )
 
                 for tok in range(vocab_size):
-                    tok_active = False
+                    tok_active = tok_active_arr[tok] != 0
                     for ic in range(embed_dim):
-                        g_sum = np.float32(0.0)
-                        for b in range(curr_bs):
-                            g_sum += grad_emb_batch[b, tok, ic]
-                        if g_sum != np.float32(0.0):
-                            tok_active = True
-                        g = g_sum * inv_bc
+                        g = grad_emb_cur[tok, ic] * inv_bc
                         m_emb[tok, ic] = beta1 * m_emb[tok, ic] + (np.float32(1.0) - beta1) * g
                         v_emb[tok, ic] = beta2 * v_emb[tok, ic] + (np.float32(1.0) - beta2) * g * g
                     for ic in range(embed_dim):

@@ -15,7 +15,7 @@ from serogen.core.seq.seq import Sequence, Sequences
 class GenomeAssembly(Sequences):
     r"""Container for a genome assembly with support for transparent decompression.
 
-    Stores contig sequence data as a contiguous memory block using [`Sequences`][serogen.core.seq.Sequences]
+    Stores contig sequence data as a contiguous memory block using [`Sequences`][serogen.core.seq.seq.Sequences]
     and supports thread-safe, lazy-cached index creation for high-performance sequence alignment.
 
     Attributes:
@@ -128,7 +128,7 @@ class GenomeAssembly(Sequences):
         r"""Construct a [`GenomeAssembly`][serogen.core.genome.GenomeAssembly] from sequence records.
 
         Args:
-            records (Iterable[Sequence]): Iterable of [`Sequence`][serogen.core.seq.Sequence] objects.
+            records (Iterable[Sequence]): Iterable of [`Sequence`][serogen.core.seq.seq.Sequence] objects.
             id_ (bytes | str): Genome assembly identifier.
 
         Returns:

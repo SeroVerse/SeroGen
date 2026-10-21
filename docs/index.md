@@ -58,7 +58,7 @@ Built on zero-copy Structure-of-Arrays (SoA) containers and parallel Numba JIT k
 flowchart LR
     FA["<b>FASTA Assembly</b><br/><i>FastaReader / GenomeAssembly</i>"]
     ORF["<b>Single-Pass ORF Caller</b><br/><i>OrfPredictor (Table 11 + Viral)</i>"]
-    CNN["<b>Protein Role CNN</b><br/><i>GeneRoleClassifier (36 Roles)</i>"]
+    CNN["<b>Protein Role CNN</b><br/><i>GeneRoleClassifier (30 Roles)</i>"]
     SEG["<b>ACP-DP Segmentation</b><br/><i>LocusSegmenter + ArchetypeClassifier</i>"]
     MAT["<b>Serotype & Graph Matching</b><br/><i>LocusMatcher + GraphAligner</i>"]
 
@@ -72,7 +72,8 @@ flowchart LR
 === "De Novo Locus Prediction"
 
     ```python
-    from serogen import GenomeAssembly, LocusPredictor
+    from serogen.core.genome import GenomeAssembly
+    from serogen.loci.predictor import LocusPredictor
 
     # Load a bacterial genome assembly (single or multi-contig FASTA)
     assembly = GenomeAssembly.from_fasta("genome.fasta")
@@ -91,10 +92,11 @@ flowchart LR
 === "Single-Pass Bacterial & Prophage ORF Calling"
 
     ```python
-    from serogen import FastaReader, OrfPredictor
+    from serogen.core.io.fasta import FastaReader
+    from serogen.genes.orf.predictor import OrfPredictor
 
     with open("CP014225.1.fasta", "rb") as fh, FastaReader(fh) as reader:
-        contigs = reader.read_all()
+        contigs = reader.load()
 
     # Predict standard bacterial ORFs alongside atypical/overlapping prophage ORFs in one pass
     predictor = OrfPredictor(include_phage=True)
@@ -107,18 +109,17 @@ flowchart LR
 === "Reference Database Matching & Graph Alignment"
 
     ```python
-    from serogen import LocusDatabase, LocusMatcher
+    from serogen.loci.matcher import LocusMatcher
 
-    db = LocusDatabase.load("spneumo_cps.npz")
-    matcher = LocusMatcher.from_database(db)
+    matcher = LocusMatcher(reference_loci)
 
     # Match segmented query loci against reference serotypes
     matches = matcher.match(loci)
     best = matches[0]
-    print(f"Best call: {best.serotype} (score={best.score:.3f}, AA identity={best.mean_aa_identity:.1%})")
+    print(f"Best call: {best.target_name} (score={best.score:.3f}, AA identity={best.mean_aa_identity:.1%})")
 
     # Perform detailed node-by-node bipartite synteny alignment
-    alignment = db.align(loci[0], best.serotype)
+    alignment = matcher.align(loci[0], best.target_index)
     ```
 
 ---

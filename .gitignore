@@ -22,6 +22,7 @@ src/serogen/_version.py
 # Documentation build output
 site/
 docs/notebooks/assets/
+docs/overrides/announcement.html
 
 # Marimo & IDE files (keep cached notebook session snapshots in scripts/)
 __marimo__/

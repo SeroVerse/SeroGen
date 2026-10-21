@@ -2,10 +2,6 @@
 
 Core Structure-of-Arrays (SoA) protocols, genomic intervals, sequence & alphabet engines, k-mer/randstrobe indices, banded Smith-Waterman-Gotoh alignment, clustering, and graph models.
 
-::: serogen.core
-    options:
-      members: false
-
 ---
 
 ## Container Protocols (`serogen.core.collections`)

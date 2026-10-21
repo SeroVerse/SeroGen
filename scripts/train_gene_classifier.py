@@ -28,11 +28,9 @@ app = marimo.App(
 
 @app.cell
 def _():
-    import glob
     import gzip
     import os
     import re
-    import sys
     import threading
     import time
     import xml.etree.ElementTree as ET
@@ -42,26 +40,6 @@ def _():
     from urllib.parse import quote
     from urllib.request import Request, urlopen
 
-    _serogen_src = str(Path(__file__).resolve().parent.parent / "src")
-    if _serogen_src not in sys.path:
-        sys.path.insert(0, _serogen_src)
-    for _sp in glob.glob(
-        str(Path(__file__).resolve().parent.parent.parent / "KBank" / ".venv" / "lib" / "python*" / "site-packages")
-    ) + glob.glob(
-        str(
-            Path.home()
-            / ".cache"
-            / "uv"
-            / "environments-v2"
-            / "train-gene-classifier-*"
-            / "lib"
-            / "python*"
-            / "site-packages"
-        )
-    ):
-        if _sp not in sys.path:
-            sys.path.append(_sp)
-
     import altair as alt
     import cassetter
     import marimo as mo
@@ -69,7 +47,7 @@ def _():
     import optuna
     from cassetter._state import get_current_cassette
     from cassetter.cassette import NoMatchError, body_to_bytes
-    from numba import njit
+    from numba import njit, prange
     from scipy.sparse import csr_array
 
     from serogen.core.io.fasta import FastaReader
@@ -105,6 +83,7 @@ def _():
         np,
         optuna,
         os,
+        prange,
         quote,
         re,
         threading,
@@ -421,6 +400,7 @@ def _(
     np,
     optuna,
     os,
+    prange,
     quote,
     threading,
     time,
@@ -472,7 +452,7 @@ def _(
                             data = gzip.decompress(data)
                         if cassette is not None and data:
                             with _cassette_lock:
-                                if cassette.record_mode in ("all", "new_episodes", "once"):  # type: ignore[attr-defined]
+                                if getattr(cassette.record_mode, "name", "ALL").upper() != "NONE":  # type: ignore[attr-defined]
                                     cassette.record(  # type: ignore[attr-defined]
                                         "GET",
                                         url,
@@ -500,7 +480,7 @@ def _(
     def fetch_uniprot_sequences(query: str, limit: int = 200) -> Sequences:
         """Fetch full-length bacterial protein sequences from UniProtKB REST API into `Sequences`."""
         encoded_q = quote(f"({query}) AND fragment:false")
-        url = f"https://rest.uniprot.org/uniprotkb/search?query={encoded_q}&format=fasta&size={limit}"
+        url = f"https://rest.uniprot.org/uniprotkb/search?query={encoded_q}&format=fasta&size={min(limit, 500)}"
         raw_fasta = http_get_bytes(url)
         if not raw_fasta or not raw_fasta.strip():
             return Sequences.empty()
@@ -509,7 +489,7 @@ def _(
     def fetch_uniref50_sequences(query: str, limit: int = 180) -> Sequences:
         """Fetch pre-clustered (<50% identity) bacterial representative sequences from UniRef50."""
         encoded_q = quote(query)
-        url = f"https://rest.uniprot.org/uniref/search?query={encoded_q}&format=fasta&size={limit}"
+        url = f"https://rest.uniprot.org/uniref/search?query={encoded_q}&format=fasta&size={min(limit, 500)}"
         raw_fasta = http_get_bytes(url)
         if not raw_fasta or not raw_fasta.strip():
             return Sequences.empty()
@@ -534,23 +514,24 @@ def _(
         if not id_list:
             return Sequences.empty()
 
-        summary_url = (
-            f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?"
-            f"db=ipg&id={','.join(id_list)}&retmode=xml{api_param}"
-        )
-        sum_xml = http_get_bytes(summary_url)
-        if not sum_xml:
-            return Sequences.empty()
-
         wp_accs: list[str] = []
-        try:
-            sum_root = ET.fromstring(sum_xml)
-            for doc in sum_root.findall(".//DocumentSummary"):
-                acc = doc.findtext("Accession")
-                if acc and (acc.startswith("WP_") or acc.startswith("NP_") or RefSeqAccPattern.match(acc)):
-                    wp_accs.append(acc)
-        except Exception:
-            return Sequences.empty()
+        for j in range(0, len(id_list), 200):
+            id_chunk = id_list[j : j + 200]
+            summary_url = (
+                f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?"
+                f"db=ipg&id={','.join(id_chunk)}&retmode=xml{api_param}"
+            )
+            sum_xml = http_get_bytes(summary_url)
+            if not sum_xml:
+                continue
+            try:
+                sum_root = ET.fromstring(sum_xml)
+                for doc in sum_root.findall(".//DocumentSummary"):
+                    acc = doc.findtext("Accession")
+                    if acc and (acc.startswith("WP_") or acc.startswith("NP_") or RefSeqAccPattern.match(acc)):
+                        wp_accs.append(acc)
+            except Exception:
+                continue
 
         unique_accs = list(dict.fromkeys(wp_accs))
         if not unique_accs:
@@ -651,7 +632,7 @@ def _(
         clusterer = Clusterer(min_identity=min_identity, mode="cdhit")
         n_functional = 29
 
-        cassette_path = Path(__file__).resolve().parent / "cassettes" / "train_gene_classifier.yaml"
+        cassette_path = Path(__file__).resolve().parent / "cassettes" / "train_gene_classifier.toml"
         cassette_path.parent.mkdir(parents=True, exist_ok=True)
 
         def _role_target(role_idx: int) -> int:
@@ -704,8 +685,8 @@ def _(
             record_mode="new_episodes",
             filter_query_parameters=["api_key"],
             intercept=[],
-        ) as _cas:
-            _active_cassette[0] = _cas
+        ):
+            _active_cassette[0] = get_current_cassette()
             try:
                 with ThreadPoolExecutor(max_workers=8) as pool:
                     primary_raw_list = list(pool.map(_fetch_primary_http, range(n_functional)))
@@ -967,6 +948,222 @@ def _(
             "confusion_records": confusion_records,
         }
 
+    @njit(nogil=True, fastmath=True)
+    def macro_f1_kernel(
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+        n_classes: int,
+    ) -> float:
+        """Fast Numba macro-F1 evaluator without Python dicts or SciPy sparse allocations."""
+        tp = np.zeros(n_classes, dtype=np.int64)
+        sup = np.zeros(n_classes, dtype=np.int64)
+        pred_pos = np.zeros(n_classes, dtype=np.int64)
+        n = len(y_true)
+        for i in range(n):
+            t = int(y_true[i])
+            p = int(y_pred[i])
+            if 0 <= t < n_classes:
+                sup[t] += 1
+            if 0 <= p < n_classes:
+                pred_pos[p] += 1
+            if t == p and 0 <= t < n_classes:
+                tp[t] += 1
+
+        f1_sum = 0.0
+        active = 0
+        for c in range(n_classes):
+            if sup[c] > 0:
+                active += 1
+                denom = pred_pos[c] + sup[c]
+                if denom > 0 and tp[c] > 0:
+                    f1_sum += (2.0 * float(tp[c])) / float(denom)
+        return f1_sum / float(active) if active > 0 else 0.0
+
+    @njit(nogil=True, parallel=True, fastmath=True)
+    def evaluate_layer_sweep_kernel(
+        H_train: np.ndarray,
+        y_train: np.ndarray,
+        H_test: np.ndarray,
+        y_test: np.ndarray,
+        n_classes: int,
+    ) -> tuple[float, float, float, float]:
+        """Numba-parallel representation evaluator returning (top1_recall, top5_purity, centroid_f1, fisher_ratio)."""
+        n_tr, dim = H_train.shape
+        n_ts = H_test.shape[0]
+        if n_tr == 0 or n_ts == 0 or dim == 0:
+            return 0.0, 0.0, 0.0, 0.0
+
+        # 1. Unit L2 row normalization in parallel
+        H_tr_norm = np.empty((n_tr, dim), dtype=np.float32)
+        for i in prange(n_tr):
+            s = np.float32(0.0)
+            for d in range(dim):
+                v = H_train[i, d]
+                s += v * v
+            inv_n = np.float32(1.0) / np.sqrt(max(s, np.float32(1e-12)))
+            for d in range(dim):
+                H_tr_norm[i, d] = H_train[i, d] * inv_n
+
+        H_ts_norm = np.empty((n_ts, dim), dtype=np.float32)
+        for i in prange(n_ts):
+            s = np.float32(0.0)
+            for d in range(dim):
+                v = H_test[i, d]
+                s += v * v
+            inv_n = np.float32(1.0) / np.sqrt(max(s, np.float32(1e-12)))
+            for d in range(dim):
+                H_ts_norm[i, d] = H_test[i, d] * inv_n
+
+        # 2. Class centroids & Fisher's Discriminant Ratio tr(S_B) / tr(S_W)
+        centroids = np.zeros((n_classes, dim), dtype=np.float32)
+        class_counts = np.zeros(n_classes, dtype=np.int32)
+        global_mean = np.zeros(dim, dtype=np.float32)
+        for i in range(n_tr):
+            c = int(y_train[i])
+            if 0 <= c < n_classes:
+                class_counts[c] += 1
+                for d in range(dim):
+                    centroids[c, d] += H_tr_norm[i, d]
+                    global_mean[d] += H_tr_norm[i, d]
+
+        inv_ntr = np.float32(1.0 / max(n_tr, 1))
+        for d in range(dim):
+            global_mean[d] *= inv_ntr
+
+        sb_trace = 0.0
+        for c in range(n_classes):
+            cnt = class_counts[c]
+            if cnt > 0:
+                inv_c = np.float32(1.0 / cnt)
+                for d in range(dim):
+                    centroids[c, d] *= inv_c
+                    diff = float(centroids[c, d] - global_mean[d])
+                    sb_trace += float(cnt) * diff * diff
+
+        sw_trace = 0.0
+        for i in range(n_tr):
+            c = int(y_train[i])
+            if 0 <= c < n_classes:
+                for d in range(dim):
+                    diff = float(H_tr_norm[i, d] - centroids[c, d])
+                    sw_trace += diff * diff
+        fisher_ratio = sb_trace / max(sw_trace, 1e-12)
+
+        # Normalize centroids to unit L2 norm for cosine nearest-centroid classification
+        centroids_norm = np.zeros((n_classes, dim), dtype=np.float32)
+        for c in range(n_classes):
+            if class_counts[c] > 0:
+                s = np.float32(0.0)
+                for d in range(dim):
+                    v = centroids[c, d]
+                    s += v * v
+                inv_n = np.float32(1.0) / np.sqrt(max(s, np.float32(1e-12)))
+                for d in range(dim):
+                    centroids_norm[c, d] = centroids[c, d] * inv_n
+
+        # 3. Parallel 1-NN Cosine Recall, Top-5 Role Purity, and Nearest-Centroid predictions
+        top1_hits = np.zeros(n_ts, dtype=np.float32)
+        top5_pur = np.zeros(n_ts, dtype=np.float32)
+        cent_preds = np.empty(n_ts, dtype=np.int32)
+        k_nn = min(5, n_tr)
+
+        for i in prange(n_ts):
+            y_t = int(y_test[i])
+            # Nearest centroid
+            best_c = 0
+            best_c_sim = np.float32(-1e30)
+            for c in range(n_classes):
+                if class_counts[c] == 0:
+                    continue
+                sim_c = np.float32(0.0)
+                for d in range(dim):
+                    sim_c += H_ts_norm[i, d] * centroids_norm[c, d]
+                if sim_c > best_c_sim:
+                    best_c_sim = sim_c
+                    best_c = c
+            cent_preds[i] = best_c
+
+            # Top-5 NN cosine search
+            top_sims = np.full(k_nn, np.float32(-1e30), dtype=np.float32)
+            top_lbls = np.full(k_nn, -1, dtype=np.int32)
+            for j in range(n_tr):
+                sim = np.float32(0.0)
+                for d in range(dim):
+                    sim += H_ts_norm[i, d] * H_tr_norm[j, d]
+                if sim > top_sims[k_nn - 1]:
+                    pos = k_nn - 1
+                    while pos > 0 and sim > top_sims[pos - 1]:
+                        top_sims[pos] = top_sims[pos - 1]
+                        top_lbls[pos] = top_lbls[pos - 1]
+                        pos -= 1
+                    top_sims[pos] = sim
+                    top_lbls[pos] = int(y_train[j])
+
+            if top_lbls[0] == y_t:
+                top1_hits[i] = np.float32(1.0)
+            matches = 0
+            for m in range(k_nn):
+                if top_lbls[m] == y_t:
+                    matches += 1
+            top5_pur[i] = np.float32(matches) / np.float32(max(k_nn, 1))
+
+        top1_recall = float(np.mean(top1_hits)) * 100.0
+        top5_purity = float(np.mean(top5_pur)) * 100.0
+        centroid_f1 = macro_f1_kernel(y_test, cent_preds, n_classes) * 100.0
+        return top1_recall, top5_purity, centroid_f1, fisher_ratio
+
+    def run_layer_representation_sweep(
+        clf: GeneRoleClassifier,
+        X_train: Sequences,
+        y_train: np.ndarray,
+        X_test: Sequences,
+        y_test: np.ndarray,
+    ) -> tuple[list[dict[str, object]], str]:
+        """Sweep all `GeneRoleClassifier.transform(layer=...)` representations using `evaluate_layer_sweep_kernel`."""
+        candidate_layers = [
+            "penultimate",
+            "task_weighted",
+            "task_weighted_conv_max",
+            "conv_max",
+            "conv_avg",
+            "embed_mean",
+            "logits",
+            "proba",
+        ] + [f"conv_k{int(k)}" for k in clf.unique_ks_]
+
+        x_tr_soa = (X_train.seqs.astype(np.uint8, copy=False), X_train.indptr.astype(np.int64, copy=False))
+        x_ts_soa = (X_test.seqs.astype(np.uint8, copy=False), X_test.indptr.astype(np.int64, copy=False))
+        y_tr_i32 = y_train.astype(np.int32, copy=False)
+        y_ts_i32 = y_test.astype(np.int32, copy=False)
+        n_classes = int(max(np.max(clf.classes_) + 1, 29)) if len(clf.classes_) > 0 else 29
+
+        records: list[dict[str, object]] = []
+        for layer_name in candidate_layers:
+            H_tr = np.ascontiguousarray(clf.transform(x_tr_soa, layer=layer_name), dtype=np.float32)
+            H_ts = np.ascontiguousarray(clf.transform(x_ts_soa, layer=layer_name), dtype=np.float32)
+            t1_rec, t5_pur, cent_f1, fisher = evaluate_layer_sweep_kernel(
+                H_tr,
+                y_tr_i32,
+                H_ts,
+                y_ts_i32,
+                n_classes,
+            )
+            composite = 0.45 * t1_rec + 0.35 * cent_f1 + 0.20 * t5_pur
+            records.append(
+                {
+                    "layer": layer_name,
+                    "dim": int(H_tr.shape[1]),
+                    "top1_recall": round(t1_rec, 2),
+                    "top5_purity": round(t5_pur, 2),
+                    "centroid_f1": round(cent_f1, 2),
+                    "fisher_ratio": round(fisher, 3),
+                    "composite_score": round(composite, 2),
+                }
+            )
+        records.sort(key=lambda r: float(r["composite_score"]), reverse=True)
+        best_layer = str(records[0]["layer"]) if records else "task_weighted_conv_max"
+        return records, best_layer
+
     def run_optuna_study(
         X_train: Sequences,
         y_train: np.ndarray,
@@ -975,19 +1172,30 @@ def _(
         epochs: int,
         seed: int,
     ) -> tuple[optuna.Study, list[dict[str, object]], list[dict[str, object]]]:
-        """Run an in-memory Optuna TPE study maximizing inner-validation Macro F1 on `X_train`."""
+        """Run an in-memory Optuna TPE study maximizing inner-validation Macro F1 on pre-packed SoA splits."""
         if cv_folds <= 1:
             tr_counts = np.bincount(y_train.astype(np.int32), minlength=29)
             max_val_per_class = max(1, int(round(float(np.median(tr_counts[:29])) * 0.20)))
             inner_tr, inner_val = stratified_split_kernel(y_train, 0.20, seed + 101, max_val_per_class)
-            splits = [(X_train[inner_tr], y_train[inner_tr], X_train[inner_val], y_train[inner_val])]
+            raw_splits = [(X_train[inner_tr], y_train[inner_tr], X_train[inner_val], y_train[inner_val])]
         else:
             fold_ids = stratified_kfold_assign(y_train, cv_folds, seed + 101)
-            splits = []
+            raw_splits = []
             for f in range(cv_folds):
                 tr_mask = fold_ids != f
                 val_mask = fold_ids == f
-                splits.append((X_train[tr_mask], y_train[tr_mask], X_train[val_mask], y_train[val_mask]))
+                raw_splits.append((X_train[tr_mask], y_train[tr_mask], X_train[val_mask], y_train[val_mask]))
+
+        # Pre-pack flat SoA (x_flat, offsets) tuples once per fold outside the trial loop
+        soa_splits = [
+            (
+                (x_tr.seqs.astype(np.uint8, copy=False), x_tr.indptr.astype(np.int64, copy=False)),
+                y_tr,
+                (x_vl.seqs.astype(np.uint8, copy=False), x_vl.indptr.astype(np.int64, copy=False)),
+                y_vl.astype(np.int32, copy=False),
+            )
+            for x_tr, y_tr, x_vl, y_vl in raw_splits
+        ]
 
         sampler = optuna.samplers.TPESampler(seed=seed)
         study = optuna.create_study(direction="maximize", sampler=sampler)
@@ -999,8 +1207,8 @@ def _(
         ) as bar:
             for _ in range(n_trials):
                 trial = study.ask()
-                embed_dim = trial.suggest_categorical("embed_dim", [32, 48, 64])
-                num_filters = trial.suggest_categorical("num_filters", [128, 192, 256])
+                embed_dim = trial.suggest_categorical("embed_dim", [16, 24, 32, 48, 64])
+                num_filters = trial.suggest_categorical("num_filters", [64, 96, 128, 192])
                 kernel_combo = trial.suggest_categorical(
                     "kernel_combo",
                     ["3, 7, 11", "5, 9, 13", "3, 5, 9, 15", "7, 11, 15", "5, 11, 17"],
@@ -1012,13 +1220,12 @@ def _(
                 k_tuple = tuple(int(k.strip()) for k in kernel_combo.split(","))
                 fold_f1s: list[float] = []
 
-                for f_idx, (x_tr, y_tr, x_vl, y_vl) in enumerate(splits):
+                for f_idx, (x_tr_soa, y_tr, x_vl_soa, y_vl_i32) in enumerate(soa_splits):
                     cand_clf = GeneRoleClassifier(
                         vocab_size=23,
                         embed_dim=int(embed_dim),
                         num_filters=int(num_filters),
                         kernel_size=k_tuple,
-                        spatial_zones=2,
                         learning_rate=float(lr),
                         epochs=epochs,
                         batch_size=int(bs),
@@ -1026,10 +1233,9 @@ def _(
                         class_weight="balanced",
                         random_state=seed + f_idx,
                     )
-                    cand_clf.fit(x_tr, y_tr)
-                    preds_vl = cand_clf.predict(x_vl)
-                    m_vl = evaluate_sparse_metrics(y_vl, preds_vl, cand_clf.classes_)
-                    fold_f1s.append(float(m_vl["macro_f1"]))
+                    cand_clf.fit(x_tr_soa, y_tr)
+                    preds_vl = cand_clf.predict(x_vl_soa).astype(np.int32, copy=False)
+                    fold_f1s.append(macro_f1_kernel(y_vl_i32, preds_vl, 29))
 
                 mean_f1 = float(np.mean(fold_f1s))
                 study.tell(trial, mean_f1)
@@ -1104,6 +1310,7 @@ def _(
     return (
         evaluate_sparse_metrics,
         fetch_in_memory_dataset,
+        run_layer_representation_sweep,
         run_optuna_study,
         stratified_split_kernel,
     )
@@ -1134,6 +1341,7 @@ def _(
     dataset_seqs,
     evaluate_sparse_metrics,
     np,
+    run_layer_representation_sweep,
     run_optuna_study,
     stratified_split_kernel,
     time,
@@ -1186,7 +1394,6 @@ def _(
         embed_dim=active_embed_dim,
         num_filters=active_num_filters,
         kernel_size=kernel_arg,
-        spatial_zones=2,
         learning_rate=active_lr,
         epochs=30,
         batch_size=active_bs,
@@ -1204,6 +1411,13 @@ def _(
     test_max_conf = np.max(test_probs, axis=1)
 
     eval_metrics = evaluate_sparse_metrics(y_test, y_pred_test, clf.classes_)
+    layer_sweep_records, best_sweep_layer = run_layer_representation_sweep(
+        clf,
+        X_train,
+        y_train,
+        X_test,
+        y_test,
+    )
 
     _rng = np.random.default_rng(42 + 999)
     _decoy_bytes = [bytes(_rng.permutation(np.frombuffer(X_test[i].seq, dtype=np.uint8))) for i in range(len(X_test))]
@@ -1219,7 +1433,6 @@ def _(
             embed_dim=active_embed_dim,
             num_filters=active_num_filters,
             kernel_size=kernel_arg,
-            spatial_zones=2,
             learning_rate=active_lr,
             epochs=30,
             batch_size=active_bs,
@@ -1239,12 +1452,14 @@ def _(
         active_lr,
         active_num_filters,
         active_wd,
+        best_sweep_layer,
         best_trial_num,
         best_val_f1,
         clf,
         config_source,
         decoy_max_conf,
         eval_metrics,
+        layer_sweep_records,
         median_val_f1,
         min_role_name,
         min_role_support,
@@ -1271,6 +1486,7 @@ def _(
     dataset_seqs,
     decoy_max_conf,
     eval_metrics,
+    layer_sweep_records,
     np,
     optuna_importance_records,
     optuna_trial_records,
@@ -1467,9 +1683,53 @@ def _(
         )
         .properties(title="Hyperparameter Importance Across Trials", width=360, height=230)
     )
+
+    _layer_order = [str(r["layer"]) for r in layer_sweep_records]
+    _layer_bar_rows: list[dict[str, object]] = []
+    for _r in layer_sweep_records:
+        for _m_label, _m_key in (
+            ("1-NN Cosine Recall (%)", "top1_recall"),
+            ("Top-5 Role Purity (%)", "top5_purity"),
+            ("Nearest-Centroid Macro F1 (%)", "centroid_f1"),
+        ):
+            _layer_bar_rows.append(
+                {
+                    "layer": str(_r["layer"]),
+                    "dim": int(_r["dim"]),
+                    "metric": _m_label,
+                    "score": float(_r[_m_key]),
+                    "fisher_ratio": float(_r["fisher_ratio"]),
+                    "composite_score": float(_r["composite_score"]),
+                }
+            )
+
+    layer_sweep_chart = (
+        alt.Chart(alt.Data(values=_layer_bar_rows))
+        .mark_bar(cornerRadiusTopRight=3, cornerRadiusBottomRight=3)
+        .encode(
+            y=alt.Y("layer:N", sort=_layer_order, title="Network Layer Representation"),
+            x=alt.X("score:Q", title="Metric Score (%)", scale=alt.Scale(domain=[0, 100])),
+            yOffset="metric:N",
+            color=alt.Color("metric:N", title="Sweep Metric", scale=alt.Scale(scheme="tealblues")),
+            tooltip=[
+                alt.Tooltip("layer:N", title="Layer"),
+                alt.Tooltip("dim:Q", title="Dimension"),
+                alt.Tooltip("metric:N", title="Metric"),
+                alt.Tooltip("score:Q", title="Score (%)", format=".2f"),
+                alt.Tooltip("fisher_ratio:Q", title="Fisher Ratio", format=".3f"),
+                alt.Tooltip("composite_score:Q", title="Composite Score", format=".2f"),
+            ],
+        )
+        .properties(
+            title="Layer Representation Sweep (1-NN Recall, Top-5 Purity & Centroid Macro F1)",
+            width=760,
+            height=240,
+        )
+    )
     return (
         conf_chart,
         counts_chart,
+        layer_sweep_chart,
         length_chart,
         loss_chart,
         open_set_chart,
@@ -1489,6 +1749,7 @@ def _(
     active_lr,
     active_num_filters,
     active_wd,
+    best_sweep_layer,
     clf,
     config_source,
     dataset_seqs,
@@ -1553,8 +1814,9 @@ def _(
                 mo.md(
                     f"**Saved Production Architecture ({config_source} -> `src/serogen/data/model.npz`)**: "
                     f"`embed_dim={active_embed_dim}`, `num_filters={active_num_filters}`, "
-                    f"`kernel_size={parsed_kernels}`, `spatial_zones=2`, "
-                    f"`lr={active_lr:.5f}`, `weight_decay={active_wd:.6f}`, `batch_size={active_bs}`."
+                    f"`kernel_size={parsed_kernels}`, "
+                    f"`lr={active_lr:.5f}`, `weight_decay={active_wd:.6f}`, `batch_size={active_bs}`, "
+                    f"top embedding layer=`{best_sweep_layer}`."
                 ),
                 kind="success",
             ),
@@ -1591,8 +1853,10 @@ def _(
     active_num_filters,
     active_wd,
     alt,
+    best_sweep_layer,
     best_trial_num,
     best_val_f1,
+    layer_sweep_chart,
     median_val_f1,
     mo,
     optuna_gain_f1,
@@ -1601,7 +1865,7 @@ def _(
     optuna_trial_records,
     parsed_kernels,
 ):
-    # Slide 3: Dedicated Optuna TPE Hyperparameter Optimization Slide
+    # Slide 3: Dedicated Optuna TPE Hyperparameter Optimization & Layer Representation Sweep Slide
     _top_trials = sorted(optuna_trial_records, key=lambda r: float(r["macro_f1"]), reverse=True)[:5]
     _top_md = "\n".join(
         f"| **#{tr['trial']}** | **{float(tr['macro_f1']):.2f}%** | {tr['embed_dim']} | {tr['num_filters']} "
@@ -1618,10 +1882,10 @@ def _(
     mo.vstack(
         [
             mo.md(
-                """
-                ## 2. Optuna TPE Hyperparameter Optimization
+                f"""
+                ## 2. Optuna TPE Hyperparameter Optimization & Layer Representation Sweep
                 Tree-structured Parzen Estimator (TPE) search over multi-scale motif kernel widths, filter capacity,
-                embedding dimension, and AdamW regularization on the inner validation split.
+                embedding dimension, and AdamW regularization, followed by a Numba-parallel representation sweep across all layers (`best={best_sweep_layer}`).
                 """
             ),
             mo.hstack(
@@ -1654,7 +1918,14 @@ def _(
                 widths="equal",
                 gap=1.0,
             ),
-            alt.hconcat(optuna_history_chart, optuna_imp_chart).resolve_scale(color="independent"),
+            mo.ui.tabs(
+                {
+                    "Optuna TPE History & Importance": alt.hconcat(
+                        optuna_history_chart, optuna_imp_chart
+                    ).resolve_scale(color="independent"),
+                    "Layer Representation Sweep": layer_sweep_chart,
+                }
+            ),
             mo.md(_top_table_md),
         ],
         gap=0.6,
@@ -1700,8 +1971,15 @@ def _(alt, conf_chart, mo, prf_chart):
 
 
 @app.cell
-def _(GeneRole, eval_metrics, mo, optuna_trial_records, role_counts):
-    # Slide 6: Reference Tables (Per-Role Performance & Complete Optuna Trial Leaderboard)
+def _(
+    GeneRole,
+    eval_metrics,
+    layer_sweep_records,
+    mo,
+    optuna_trial_records,
+    role_counts,
+):
+    # Slide 6: Reference Tables (Per-Role Performance, Layer Sweep & Complete Optuna Trial Leaderboard)
     _role_md_rows = []
     for _c_idx in range(29):
         _r = GeneRole(_c_idx)
@@ -1724,11 +2002,25 @@ def _(GeneRole, eval_metrics, mo, optuna_trial_records, role_counts):
         for tr in optuna_trial_records
     )
 
+    _layer_md = "\n".join(
+        f"| `{lr_row['layer']}` | {lr_row['dim']} | **{float(lr_row['top1_recall']):.2f}%** "
+        f"| {float(lr_row['top5_purity']):.2f}% | {float(lr_row['centroid_f1']):.2f}% "
+        f"| {float(lr_row['fisher_ratio']):.3f} | **{float(lr_row['composite_score']):.2f}** |"
+        for lr_row in layer_sweep_records
+    )
+
     _role_table_md = "\n".join(
         [
             "| ID | Abbrev | Gene Role | Category | Post-CD-HIT Total | Test Support | Precision | Recall | F1-Score |",
             "| ---: | :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: |",
             _role_md,
+        ]
+    )
+    _layer_table_md = "\n".join(
+        [
+            "| Layer | Dim | 1-NN Cosine Recall | Top-5 Role Purity | Nearest-Centroid Macro F1 | Fisher Ratio | Composite Score |",
+            "| :--- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            _layer_md,
         ]
     )
     _trial_table_md = "\n".join(
@@ -1741,10 +2033,11 @@ def _(GeneRole, eval_metrics, mo, optuna_trial_records, role_counts):
 
     mo.vstack(
         [
-            mo.md("## 5. Per-Role Holdout Metrics & Complete Optuna Trial Leaderboard"),
+            mo.md("## 5. Per-Role Holdout Metrics, Layer Sweep & Complete Optuna Trial Leaderboard"),
             mo.ui.tabs(
                 {
                     "29 Functional GeneRoles (Holdout Test)": mo.md(_role_table_md),
+                    f"Layer Representation Sweep ({len(layer_sweep_records)} Layers)": mo.md(_layer_table_md),
                     f"Optuna TPE Study ({len(optuna_trial_records)} Trials)": mo.md(_trial_table_md),
                 }
             ),

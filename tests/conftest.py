@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from serogen.core.genome import GenomeAssembly
-from serogen.genes import OrfPredictor
+from serogen.genes.orf.predictor import OrfPredictor
 
 DATA_DIR: Path = Path(__file__).resolve().parent / "data"
 
@@ -79,5 +79,5 @@ def genome_assembly(request: pytest.FixtureRequest) -> GenomeAssembly:
 # ----------------------------------------------------------------------------------------------------------------------
 @pytest.fixture(scope="session")
 def orf_predictor() -> OrfPredictor:
-    """Session-scoped whole-genome `OrfPredictor` instance."""
-    return OrfPredictor(whole_genome=True)
+    """Session-scoped `OrfPredictor` instance."""
+    return OrfPredictor()

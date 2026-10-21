@@ -13,9 +13,9 @@ class FastaReader(Iterator[Sequence]):
     r"""High-performance stateful FASTA stream iterator and vectorized batch loader.
 
     Streams binary FASTA handles in chunks, splitting on `\n>` boundaries and applying
-    C-level `bytes.translate` to yield [`Sequence`][serogen.core.seq.Sequence] instances
+    C-level `bytes.translate` to yield [`Sequence`][serogen.core.seq.seq.Sequence] instances
     with $O(1)$ memory overhead, or loads an entire stream at once into a contiguous
-    [`Sequences`][serogen.core.seq.Sequences] Structure-of-Arrays container via [`load`][serogen.core.io.fasta.FastaReader.load].
+    [`Sequences`][serogen.core.seq.seq.Sequences] Structure-of-Arrays container via [`load`][serogen.core.io.fasta.FastaReader.load].
 
     Args:
         handle: Open binary stream (`IO[bytes]`) containing FASTA sequence data.
@@ -81,7 +81,7 @@ class FastaReader(Iterator[Sequence]):
         return self
 
     def __next__(self) -> Sequence:
-        """Fetch the next [`Sequence`][serogen.core.seq.Sequence] record from the FASTA stream."""
+        """Fetch the next [`Sequence`][serogen.core.seq.seq.Sequence] record from the FASTA stream."""
         return next(self._stream)
 
     def __enter__(self) -> Self:
@@ -145,7 +145,7 @@ class FastaReader(Iterator[Sequence]):
             )
 
     def load(self) -> Sequences:
-        r"""Load the FASTA stream into memory as a contiguous [`Sequences`][serogen.core.seq.Sequences] batch.
+        r"""Load the FASTA stream into memory as a contiguous [`Sequences`][serogen.core.seq.seq.Sequences] batch.
 
         Uses C-level `bytes.split`, `bytes.partition`, and 256-byte lookup table `bytes.translate`
         combined with a single `bytearray.join` allocation and zero-copy `np.frombuffer` view.

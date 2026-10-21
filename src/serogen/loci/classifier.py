@@ -176,7 +176,14 @@ class ArchetypeClassifier:
         rel_mass = probs @ t.relevant_indicators.T
         arch_emission = 0.85 * rel_mass + 0.15 * null_mass[:, None]
         forb_penalty = np.log(np.clip(1.0 - 0.95 * forb_hit, 1e-6, 1.0))
-        step_llr = np.log(np.clip(arch_emission, 1e-12, None)) - np.log(np.clip(null_mass[:, None], 1e-12, None))
+        mge_mass = np.clip(
+            probs[:, int(GeneRole.TRANSPOSASE)] + probs[:, int(GeneRole.INTEGRASE)],
+            0.0,
+            1.0,
+        )
+        step_llr = (np.log(np.clip(arch_emission, 1e-12, None)) - np.log(np.clip(null_mass[:, None], 1e-12, None))) * (
+            1.0 - mge_mass[:, None]
+        )
         step_llr += forb_penalty
         step_llr[:, int(LocusArchetype.UNKNOWN)] = 0.0
 

@@ -2,13 +2,13 @@ r"""Biological sequence data structures, SoA containers, and translation utiliti
 
 This module provides high-performance data structures for storing, manipulating, and
 translating biological sequences (DNA, RNA, protein). Sequences are stored either as individual
-immutable [`Sequence`][serogen.core.seq.Sequence] instances or as contiguous, flat arrays in
-[`Sequences`][serogen.core.seq.Sequences] Structure-of-Arrays (SoA) containers.
+immutable [`Sequence`][serogen.core.seq.seq.Sequence] instances or as contiguous, flat arrays in
+[`Sequences`][serogen.core.seq.seq.Sequences] Structure-of-Arrays (SoA) containers.
 
 Key Classes:
-    - [`Sequence`][serogen.core.seq.Sequence]: Immutable container for a single sequence record.
-    - [`Sequences`][serogen.core.seq.Sequences]: Memory-efficient, Numba-accelerated SoA container.
-    - [`BacterialTranslationTable`][serogen.core.seq.BacterialTranslationTable]: NCBI Translation Table 11 translator.
+    - [`Sequence`][serogen.core.seq.seq.Sequence]: Immutable container for a single sequence record.
+    - [`Sequences`][serogen.core.seq.seq.Sequences]: Memory-efficient, Numba-accelerated SoA container.
+    - [`GeneticCode`][serogen.core.seq.alphabet.GeneticCode]: NCBI genetic code translator.
 """
 
 from collections.abc import Generator, Iterable
@@ -262,8 +262,8 @@ class Sequences(RaggedArrayContainer["Sequence", "Sequences"]):
                 or 1D array/iterable of IDs.
 
         Returns:
-            Sequence | Sequences: A scalar [`Sequence`][serogen.core.seq.Sequence] if a single byte identifier
-                is passed, or a sub-[`Sequences`][serogen.core.seq.Sequences] batch matching the query IDs in order.
+            Sequence | Sequences: A scalar [`Sequence`][serogen.core.seq.seq.Sequence] if a single byte identifier
+                is passed, or a sub-[`Sequences`][serogen.core.seq.seq.Sequences] batch matching the query IDs in order.
 
         Raises:
             KeyError: If any requested sequence identifier is not found in the container.
@@ -295,8 +295,8 @@ class Sequences(RaggedArrayContainer["Sequence", "Sequences"]):
             item: An integer index, slice, array mask, list of indices, or byte identifier(s).
 
         Returns:
-            Sequence | Sequences: A single [`Sequence`][serogen.core.seq.Sequence] if integer index
-                or single byte identifier is passed, or a sliced [`Sequences`][serogen.core.seq.Sequences] collection.
+            Sequence | Sequences: A single [`Sequence`][serogen.core.seq.seq.Sequence] if integer index
+                or single byte identifier is passed, or a sliced [`Sequences`][serogen.core.seq.seq.Sequences] collection.
 
         Raises:
             IndexError: If an integer index is out of bounds.

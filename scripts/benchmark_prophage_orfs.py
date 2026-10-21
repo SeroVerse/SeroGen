@@ -35,9 +35,10 @@ def _():
     import marimo as mo
     import numpy as np
 
-    from serogen.core.io import FastaReader
-    from serogen.core.seq import Alphabet, GeneticCode, Sequence
-    from serogen.genes import OrfPredictor
+    from serogen.core.io.fasta import FastaReader
+    from serogen.core.seq.alphabet import Alphabet, GeneticCode
+    from serogen.core.seq.seq import Sequence
+    from serogen.genes.orf.predictor import OrfPredictor
 
     alt.data_transformers.disable_max_rows()
 
@@ -163,15 +164,15 @@ def _(FastaReader, Path, np, re, urllib):
 def _(GeneticCode, OrfPredictor, PROPHAGES, genome_len, genome_seq, np, raw_bytes, ref_cds, time):
     # Warm up Numba JIT compilation before timing
     _warmup_seq = genome_seq.seq[:20_000]
-    OrfPredictor(whole_genome=True, genetic_code=GeneticCode.bacterial, include_phage=False).predict(_warmup_seq)
-    OrfPredictor(whole_genome=True, genetic_code=GeneticCode.viral, include_phage=True).predict(_warmup_seq)
+    OrfPredictor(genetic_code=GeneticCode.bacterial, include_phage=False, min_gene_len=120).predict(_warmup_seq)
+    OrfPredictor(genetic_code=GeneticCode.viral, include_phage=True).predict(_warmup_seq)
 
     # 1. Baseline Bacterial-Only Mode (Table 11, include_phage=False, min_gene_len=120)
     _t0 = time.perf_counter()
     pred_baseline = OrfPredictor(
-        whole_genome=True,
         genetic_code=GeneticCode.bacterial,
         include_phage=False,
+        min_gene_len=120,
     )
     genes_baseline = pred_baseline.predict(genome_seq)
     time_baseline = time.perf_counter() - _t0
@@ -179,7 +180,6 @@ def _(GeneticCode, OrfPredictor, PROPHAGES, genome_len, genome_seq, np, raw_byte
     # 2. Single-Pass Phage-Aware Mode (GeneticCode.viral, include_phage=True, min_gene_len=90, local_gc_window=4000)
     _t0 = time.perf_counter()
     pred_phage = OrfPredictor(
-        whole_genome=True,
         genetic_code=GeneticCode.viral,
         include_phage=True,
     )
@@ -196,7 +196,7 @@ def _(GeneticCode, OrfPredictor, PROPHAGES, genome_len, genome_seq, np, raw_byte
         ("Table 25 (Viral Opal TGA->G)", GeneticCode.viral_opal_g),
     ]:
         _t_start = time.perf_counter()
-        _g = OrfPredictor(whole_genome=True, genetic_code=_code_obj, include_phage=True).predict(genome_seq)
+        _g = OrfPredictor(genetic_code=_code_obj, include_phage=True).predict(genome_seq)
         _dt = time.perf_counter() - _t_start
         alt_code_timings.append(
             {

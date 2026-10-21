@@ -99,6 +99,8 @@ class LocusSegmenter:
 
         t = self.classifier.tensors
         biosyn_prob = probs[:, t.biosynthetic_mask].sum(axis=1)
+        mge_prob = probs[:, int(GeneRole.TRANSPOSASE)] + probs[:, int(GeneRole.INTEGRASE)]
+        is_mge = mge_prob >= self.min_biosynthetic_prob
         mach_prob = probs[:, t.machinery_roles].sum(axis=1)
         synth_prob = probs[:, int(GeneRole.TRANSMEMBRANE_SYNTHASE)]
 
@@ -148,8 +150,16 @@ class LocusSegmenter:
 
         for idx in active_indices[1:]:
             i = int(idx)
-            gene_gap = i - cur_end - 1
-            bp_gap = int(starts[i]) - int(ends[cur_end])
+            raw_gene_gap = i - cur_end - 1
+            mge_in_gap = int(np.sum(is_mge[cur_end + 1 : i])) if raw_gene_gap > 0 else 0
+            if mge_in_gap > 0:
+                gene_gap = max(0, raw_gene_gap - mge_in_gap - 1)
+                mge_idx = np.nonzero(is_mge[cur_end + 1 : i])[0] + (cur_end + 1)
+                mge_span = max(0, int(ends[mge_idx[-1]]) - int(starts[mge_idx[0]]))
+                bp_gap = max(0, int(starts[i]) - int(ends[cur_end]) - mge_span)
+            else:
+                gene_gap = raw_gene_gap
+                bp_gap = int(starts[i]) - int(ends[cur_end])
             if gene_gap <= self.max_gap_genes and bp_gap <= self.max_gap_bp:
                 cur_end = i
                 if mach_prob[i] >= self.min_machinery_prob:
@@ -245,6 +255,7 @@ class LocusSegmenter:
 
         # Trim across large inter-operon gaps (>= 2,000 bp) if the outer piece has no archetype machinery
         # and trimming preserves 100% of the segment's module completeness
+        mge_roles = (int(GeneRole.TRANSPOSASE), int(GeneRole.INTEGRASE))
         if starts is not None and ends is not None and right - left + 1 > min_genes:
             c_cur, _, _ = self.classifier.score_segments(
                 np.array([left], dtype=np.intp),
@@ -254,7 +265,11 @@ class LocusSegmenter:
             cur_comp = float(c_cur[0, a_id])
 
             for k in range(left + 1, right - min_genes + 2):
-                if int(starts[k]) - int(ends[k - 1]) >= 2000:
+                if (
+                    int(starts[k]) - int(ends[k - 1]) >= 2000
+                    and int(top_roles[k - 1]) not in mge_roles
+                    and int(top_roles[k]) not in mge_roles
+                ):
                     has_outer_mach = any((arch_mach_mask & (1 << int(top_roles[p]))) != 0 for p in range(left, k))
                     if not has_outer_mach:
                         c_re, inc_re, _ = self.classifier.score_segments(
@@ -270,7 +285,11 @@ class LocusSegmenter:
                             left, right = _snap_relevant(k, right)
 
             for k in range(right, left + min_genes - 1, -1):
-                if int(starts[k]) - int(ends[k - 1]) >= 2000:
+                if (
+                    int(starts[k]) - int(ends[k - 1]) >= 2000
+                    and int(top_roles[k - 1]) not in mge_roles
+                    and int(top_roles[k]) not in mge_roles
+                ):
                     has_outer_mach = any((arch_mach_mask & (1 << int(top_roles[p]))) != 0 for p in range(k, right + 1))
                     if not has_outer_mach:
                         c_re, inc_re, _ = self.classifier.score_segments(
@@ -296,26 +315,41 @@ class LocusSegmenter:
             else (1 if int(np.sum(strands[left : right + 1])) >= 0 else -1)
         )
 
-        # Trim leading opposite-strand genes if completeness remains >= min_completeness
+        c_cur_st, _, _ = self.classifier.score_segments(
+            np.array([left], dtype=np.intp),
+            np.array([right + 1], dtype=np.intp),
+            prefixes=prefixes,
+        )
+        cur_comp_st = float(c_cur_st[0, a_id])
+
+        # Trim leading opposite-strand genes if completeness is preserved and remains >= min_completeness
         while right - left + 1 > min_genes and int(strands[left]) != dom_strand:
             c_re, inc_re, _ = self.classifier.score_segments(
                 np.array([left + 1], dtype=np.intp),
                 np.array([right + 1], dtype=np.intp),
                 prefixes=prefixes,
             )
-            if float(c_re[0, a_id]) >= self.min_completeness and float(inc_re[0, a_id]) <= self.max_incompatibility:
+            if (
+                float(c_re[0, a_id]) >= cur_comp_st - 1e-6
+                and float(c_re[0, a_id]) >= self.min_completeness
+                and float(inc_re[0, a_id]) <= self.max_incompatibility
+            ):
                 left, right = _snap_relevant(left + 1, right)
             else:
                 break
 
-        # Trim trailing opposite-strand genes if completeness remains >= min_completeness
+        # Trim trailing opposite-strand genes if completeness is preserved and remains >= min_completeness
         while right - left + 1 > min_genes and int(strands[right]) != dom_strand:
             c_re, inc_re, _ = self.classifier.score_segments(
                 np.array([left], dtype=np.intp),
                 np.array([right], dtype=np.intp),
                 prefixes=prefixes,
             )
-            if float(c_re[0, a_id]) >= self.min_completeness and float(inc_re[0, a_id]) <= self.max_incompatibility:
+            if (
+                float(c_re[0, a_id]) >= cur_comp_st - 1e-6
+                and float(c_re[0, a_id]) >= self.min_completeness
+                and float(inc_re[0, a_id]) <= self.max_incompatibility
+            ):
                 left, right = _snap_relevant(left, right - 1)
             else:
                 break
@@ -398,17 +432,28 @@ class LocusSegmenter:
         best_non_unk = np.argmax(non_unk, axis=1).astype(np.int32)
         raw_top = np.argmax(island_probs, axis=1).astype(np.int32)
         biosyn_prob = island_probs[:, t.biosynthetic_mask].sum(axis=1)
+        mge_prob = island_probs[:, int(GeneRole.TRANSPOSASE)] + island_probs[:, int(GeneRole.INTEGRASE)]
+        is_mge = mge_prob >= self.min_biosynthetic_prob
         top_roles = np.where(
-            (raw_top == int(GeneRole.UNKNOWN)) & (biosyn_prob >= self.min_biosynthetic_prob),
+            (raw_top == int(GeneRole.UNKNOWN)) & ((biosyn_prob + mge_prob) >= self.min_biosynthetic_prob),
             best_non_unk,
             raw_top,
         ).astype(np.int32)
 
-        # Precompute internal intergenic transition penalties (strand switches & large gaps)
+        # Precompute internal intergenic transition penalties (strand switches & large gaps),
+        # propagating host operon strand across mobile element (TRANSPOSASE/INTEGRASE) insertions
         pref_trans = np.zeros(m, dtype=np.float64)
         if m > 1:
-            strand_diff = (island_strands[:-1] != island_strands[1:]).astype(np.float64)
-            gaps_bp = np.maximum(0, island_starts[1:] - island_ends[:-1]).astype(np.float64)
+            eff_strands = island_strands.copy()
+            for k_s in range(1, m):
+                if is_mge[k_s]:
+                    eff_strands[k_s] = eff_strands[k_s - 1]
+            for k_s in range(m - 2, -1, -1):
+                if is_mge[k_s]:
+                    eff_strands[k_s] = eff_strands[k_s + 1]
+            strand_diff = (eff_strands[:-1] != eff_strands[1:]).astype(np.float64)
+            mge_edge = is_mge[:-1] | is_mge[1:]
+            gaps_bp = np.where(mge_edge, 0.0, np.maximum(0, island_starts[1:] - island_ends[:-1]).astype(np.float64))
             gap_pen = np.maximum(0.0, (gaps_bp - 500.0) / 1000.0) * 2.0
             edge_pen = strand_diff * self.strand_switch_penalty + gap_pen
             np.cumsum(edge_pen, out=pref_trans[1:])
@@ -434,11 +479,15 @@ class LocusSegmenter:
         trans_pen_vec = pref_trans[e_arr - 1] - pref_trans[s_arr]
         adj_llr_mat = llr_mat - trans_pen_vec[:, None]
         seg_len = (e_arr - s_arr)[:, None].astype(np.float64)
+        pref_mge = np.zeros(m + 1, dtype=np.float64)
+        np.cumsum(is_mge.astype(np.float64), out=pref_mge[1:])
+        mge_cnt = (pref_mge[e_arr] - pref_mge[s_arr])[:, None]
+        eff_seg_len = np.maximum(1.0, seg_len - mge_cnt)
 
         valid_mask = (
             (comp_mat >= self.min_completeness)
             & (incomp_mat <= self.max_incompatibility)
-            & (adj_llr_mat >= self.min_mean_llr * seg_len)
+            & (adj_llr_mat >= self.min_mean_llr * eff_seg_len)
         )
         valid_mask[:, int(LocusArchetype.UNKNOWN)] = False
 
@@ -999,7 +1048,10 @@ class LocusSegmenter:
 
         top_roles = np.argmax(probs, axis=1).astype(np.int32)
         biosyn_prob_all = probs[:, t.biosynthetic_mask].sum(axis=1)
-        use_non_unk = (top_roles == int(GeneRole.UNKNOWN)) & (biosyn_prob_all >= self.min_biosynthetic_prob)
+        mge_prob_all = probs[:, int(GeneRole.TRANSPOSASE)] + probs[:, int(GeneRole.INTEGRASE)]
+        use_non_unk = (top_roles == int(GeneRole.UNKNOWN)) & (
+            (biosyn_prob_all + mge_prob_all) >= self.min_biosynthetic_prob
+        )
         top_roles = np.where(use_non_unk, best_non_unk_roles, top_roles).astype(np.int32)
 
         starts = genes.intervals.starts

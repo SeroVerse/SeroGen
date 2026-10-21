@@ -44,22 +44,16 @@ def _():
     import numpy as np
     from cassetter import Cassetter
 
-    from serogen.core.graph import LayoutEngine
+    from serogen.core.graph.layout import LayoutEngine
     from serogen.core.io.fasta import FastaReader
     from serogen.core.seq.clustering import Clusterer
     from serogen.core.seq.seq import Sequence, Sequences
-    from serogen.genes import GeneRole, GeneRoleClassifier
-    from serogen.loci import (
-        BENIGN_VARIANT_MASK,
-        ArchetypeCategory,
-        GeneNode,
-        Loci,
-        Locus,
-        LocusArchetype,
-        LocusMatcher,
-        LocusPredictor,
-        MatchType,
-    )
+    from serogen.genes.cnn import GeneRoleClassifier
+    from serogen.genes.roles import GeneRole
+    from serogen.loci.archetypes import ArchetypeCategory, LocusArchetype
+    from serogen.loci.matcher import BENIGN_VARIANT_MASK, LocusMatcher, MatchType
+    from serogen.loci.models import GeneNode, Loci, Locus
+    from serogen.loci.predictor import LocusPredictor
 
     alt.data_transformers.disable_max_rows()
 
@@ -690,8 +684,8 @@ async def _(
         WGS_VALIDATION_SPECS,
     )
 
-    cps_predictor = LocusPredictor(whole_genome=False)
-    wgs_predictor = LocusPredictor(whole_genome=True, stitch_contig_splits=True)
+    cps_predictor = LocusPredictor(stitch_contig_splits=False)
+    wgs_predictor = LocusPredictor(stitch_contig_splits=True)
 
     pneumo_db = PneumoSerotypeDatabase.build(
         active_cps_specs,

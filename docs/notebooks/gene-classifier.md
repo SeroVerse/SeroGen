@@ -19,9 +19,9 @@ This presentation documents the reference dataset curation, **Optuna TPE hyperpa
 
 ## Key Takeaways
 
-- **92.10% Held-Out Test Accuracy / 91.97% Macro F1**: Multi-scale 1D-CNN (`embed_dim=64`, `num_filters=192`, `kernel_size=(5, 9, 13)`, `spatial_zones=2`) selected via 20-trial Optuna TPE search achieves 92.3% macro precision and 92.1% macro recall across all 29 functional `GeneRole`s.
-- **Dedicated Optuna TPE Optimization Slide**: Visualizes the trial-by-trial validation Macro F1 trajectory, best-so-far frontier, hyperparameter importance share, and Top-5 trial configurations.
-- **Automatic Production Model Export**: Running `scripts/train_gene_classifier.py` refits the winning Optuna architecture on the full curated reference set and saves the production weights directly to `src/serogen/data/model.npz` (`545.8 KB`).
+- **90.23% Held-Out Test Accuracy / 90.19% Macro F1**: Multi-scale 1D-CNN (`embed_dim=64`, `num_filters=192`, `kernel_size=(5, 9, 13)`) selected via 20-trial Optuna TPE search achieves 90.7% macro precision and 90.2% macro recall across all 29 functional `GeneRole`s (`~13s` full refit via LUT-factored Numba SoA backward kernels).
+- **Dedicated Optuna TPE & Layer Representation Sweep Slide**: Visualizes the trial-by-trial validation Macro F1 trajectory, hyperparameter importance share, and a Numba-parallel (`@njit(parallel=True)`) 9-representation Layer Sweep (`embed_pool`, `conv_max`, `conv_mean`, `biochem`, `penultimate`, `task_weighted`, `penult_logits`, `logits`, `proba`) ranked by Top-1 cosine k-NN recall, Top-5 purity, nearest-centroid Macro F1, and Fisher discriminability.
+- **Automatic Production Model Export**: Running `scripts/train_gene_classifier.py` refits the winning Optuna architecture on the full curated reference set and saves the production weights directly to `src/serogen/data/model.npz`.
 
 ## Run Locally
 

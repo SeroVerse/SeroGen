@@ -480,13 +480,60 @@ def _refine_start(
     return s_save
 
 
+@njit(inline="always", nogil=True)
+def _emit_gene(
+    out_bufs: tuple[np.ndarray, ...],
+    g_slot: int,
+    c_slot: int,
+    i_slot: int,
+    g_s: int,
+    g_e: int,
+    strand: int,
+    is_partial: bool,
+    contig_idx: int,
+    c_start: int,
+    dna_src: np.ndarray,
+    dna_len: int,
+    lut_rc: np.ndarray,
+    indel_pos_buf: np.ndarray,
+    indel_kind_buf: np.ndarray,
+    indel_len: int,
+) -> None:
+    r"""Write a single gene's interval, CDS bytes, and frameshift indels into the pre-allocated SoA arrays."""
+    (
+        out_starts,
+        out_ends,
+        out_strands,
+        out_partials,
+        out_contig_indices,
+        out_cds_seqs,
+        out_cds_offsets,
+        out_cds_lengths,
+        out_indel_pos,
+        out_indel_kinds,
+        out_indel_offsets,
+        out_indel_lengths,
+    ) = out_bufs
+    out_starts[g_slot], out_ends[g_slot], out_strands[g_slot] = g_s, g_e, strand
+    out_partials[g_slot], out_contig_indices[g_slot] = is_partial, contig_idx
+    out_cds_offsets[g_slot], out_cds_lengths[g_slot] = c_slot, dna_len
+    if strand == 1:
+        out_cds_seqs[c_slot : c_slot + dna_len] = dna_src[:dna_len]
+    else:
+        for k in range(dna_len):
+            out_cds_seqs[c_slot + k] = lut_rc[dna_src[dna_len - 1 - k]]
+    out_indel_offsets[g_slot], out_indel_lengths[g_slot] = i_slot, indel_len
+    for ii in range(indel_len):
+        out_indel_pos[i_slot + ii] = indel_pos_buf[ii] + c_start
+        out_indel_kinds[i_slot + ii] = indel_kind_buf[ii]
+
+
 @njit(fastmath=True, nogil=True, cache=True)
 def _scan_window_genes(
     raw_seq: np.ndarray,
     seq: np.ndarray,
     vpath: np.ndarray,
     cg_bins: np.ndarray,
-    whole_genome: bool,
     include_phage: bool,
     min_gene_len: int,
     score_params: tuple[np.ndarray, ...],
@@ -504,26 +551,12 @@ def _scan_window_genes(
     indel_off: int,
 ) -> tuple[int, int, int]:
     r"""Scan a single decoded window to count (`write=False`) or populate (`write=True`) SoA gene records."""
-    (
-        out_starts,
-        out_ends,
-        out_strands,
-        out_partials,
-        out_contig_indices,
-        out_cds_seqs,
-        out_cds_offsets,
-        out_cds_lengths,
-        out_indel_pos,
-        out_indel_kinds,
-        out_indel_offsets,
-        out_indel_lengths,
-    ) = out_bufs
     stop_mask_64 = score_params[7]
     rev_stop_mask_64 = score_params[9]
 
     seq_len = len(seq)
     tri_arr = _build_tri_array(seq)
-    gene_len = min_gene_len if whole_genome else min(min_gene_len, 60)
+    gene_len = min_gene_len
 
     dna_buf = np.empty(seq_len * 2 + 100 if write else 0, dtype=np.uint8)
     indel_pos_buf = np.empty(seq_len + 16 if write else 0, dtype=np.int32)
@@ -591,7 +624,8 @@ def _scan_window_genes(
                 end_t = temp_t
 
             is_partial_gene = (left_truncated and is_contig_left) or (right_truncated and is_contig_right)
-            threshold = gene_len + (3 if whole_genome and codon_start == -1 else 0)
+            eff_gene_len = min(gene_len, 60) if is_partial_gene else gene_len
+            threshold = eff_gene_len + (3 if codon_start == -1 and not right_truncated else 0)
 
             if codon_start == 1:
                 if 1 <= dna_start_t - start_t <= 3 and not left_truncated:
@@ -604,44 +638,43 @@ def _scan_window_genes(
                         dna_buf[2] = raw_seq[dna_start_t + 1]
                     dna_len += 3
 
-                if whole_genome:
-                    if not left_truncated:
-                        s_save = _refine_start(
-                            seq,
-                            tri_arr,
-                            cg_bins,
-                            start_t - 1,
-                            end_t - start_t,
-                            prev_local_e,
-                            gene_len,
-                            curr_indel_len,
-                            include_phage,
-                            1,
-                            score_params,
-                        )
-                        dna_start_t -= s_save
-                        if s_save > 0:
-                            if write:
-                                dna_buf[s_save : dna_len + s_save] = dna_buf[:dna_len]
-                                for idx_s in range(s_save):
-                                    dna_buf[idx_s] = raw_seq[dna_start_t - 1 + idx_s]
-                            dna_len += s_save
-                        elif s_save < 0:
-                            d_shift = -s_save
-                            dna_len -= d_shift
-                            if write and dna_len > 0:
-                                dna_buf[:dna_len] = dna_buf[d_shift : d_shift + dna_len]
-
-                    if not right_truncated:
+                if not left_truncated:
+                    s_save = _refine_start(
+                        seq,
+                        tri_arr,
+                        cg_bins,
+                        start_t - 1,
+                        end_t - start_t,
+                        prev_local_e,
+                        gene_len,
+                        curr_indel_len,
+                        include_phage,
+                        1,
+                        score_params,
+                    )
+                    dna_start_t -= s_save
+                    if s_save > 0:
                         if write:
-                            dna_buf[dna_len] = raw_seq[end_t - 3]
-                            dna_buf[dna_len + 1] = raw_seq[end_t - 2]
-                            dna_buf[dna_len + 2] = raw_seq[end_t - 1]
-                        dna_len += 3
+                            dna_buf[s_save : dna_len + s_save] = dna_buf[:dna_len]
+                            for idx_s in range(s_save):
+                                dna_buf[idx_s] = raw_seq[dna_start_t - 1 + idx_s]
+                        dna_len += s_save
+                    elif s_save < 0:
+                        d_shift = -s_save
+                        dna_len -= d_shift
+                        if write and dna_len > 0:
+                            dna_buf[:dna_len] = dna_buf[d_shift : d_shift + dna_len]
+
+                if not right_truncated:
+                    if write:
+                        dna_buf[dna_len] = raw_seq[end_t - 3]
+                        dna_buf[dna_len + 1] = raw_seq[end_t - 2]
+                        dna_buf[dna_len + 2] = raw_seq[end_t - 1]
+                    dna_len += 3
 
                 local_s = dna_start_t - 1
             else:
-                if whole_genome and not right_truncated:
+                if not right_truncated:
                     end_old = end_t
                     s_save = _refine_start(
                         seq,
@@ -675,12 +708,12 @@ def _scan_window_genes(
             if dna_len > threshold:
                 local_e = end_t
                 shadowed = False
-                if include_phage and whole_genome and not is_partial_gene and dna_len <= 300:
+                if include_phage and not is_partial_gene and dna_len <= 300:
                     shadowed = _is_shadowed_by_opposite_orf(
                         seq, tri_arr, prev_local_e, local_s, local_e, codon_start, cg_bins, score_params
                     )
                 if not shadowed:
-                    if include_phage and whole_genome and local_s - prev_local_e >= 60:
+                    if include_phage and local_s - prev_local_e >= 60:
                         cand_s, cand_e, cand_st = _find_best_gap_orf(
                             seq, tri_arr, prev_local_e, local_s, gene_len, cg_bins, score_params
                         )
@@ -690,20 +723,24 @@ def _scan_window_genes(
                             cand_len = cand_e - cand_s
                             if left_cutoff <= cg_mid < right_cutoff and cg_e > cg_s and cand_len >= 60:
                                 if write:
-                                    g_slot, c_slot, i_slot = (
+                                    _emit_gene(
+                                        out_bufs,
                                         gene_off + n_genes,
                                         cds_off + total_cds,
                                         indel_off + total_indels,
+                                        cg_s,
+                                        cg_e,
+                                        cand_st,
+                                        False,
+                                        contig_idx,
+                                        c_start,
+                                        raw_seq[cand_s:cand_e],
+                                        cand_len,
+                                        lut_rc,
+                                        indel_pos_buf,
+                                        indel_kind_buf,
+                                        0,
                                     )
-                                    out_starts[g_slot], out_ends[g_slot], out_strands[g_slot] = cg_s, cg_e, cand_st
-                                    out_partials[g_slot], out_contig_indices[g_slot] = False, contig_idx
-                                    out_cds_offsets[g_slot], out_cds_lengths[g_slot] = c_slot, cand_len
-                                    if cand_st == 1:
-                                        out_cds_seqs[c_slot : c_slot + cand_len] = raw_seq[cand_s:cand_e]
-                                    else:
-                                        for k in range(cand_len):
-                                            out_cds_seqs[c_slot + k] = lut_rc[raw_seq[cand_e - 1 - k]]
-                                    out_indel_offsets[g_slot], out_indel_lengths[g_slot] = i_slot, 0
                                 n_genes += 1
                                 total_cds += cand_len
 
@@ -711,19 +748,24 @@ def _scan_window_genes(
                     mid = (g_s + g_e) // 2
                     if left_cutoff <= mid < right_cutoff and g_e > g_s and dna_len >= 60:
                         if write:
-                            g_slot, c_slot, i_slot = gene_off + n_genes, cds_off + total_cds, indel_off + total_indels
-                            out_starts[g_slot], out_ends[g_slot], out_strands[g_slot] = g_s, g_e, codon_start
-                            out_partials[g_slot], out_contig_indices[g_slot] = is_partial_gene, contig_idx
-                            out_cds_offsets[g_slot], out_cds_lengths[g_slot] = c_slot, dna_len
-                            if codon_start == 1:
-                                out_cds_seqs[c_slot : c_slot + dna_len] = dna_buf[:dna_len]
-                            else:
-                                for k in range(dna_len):
-                                    out_cds_seqs[c_slot + k] = lut_rc[dna_buf[dna_len - 1 - k]]
-                            out_indel_offsets[g_slot], out_indel_lengths[g_slot] = i_slot, curr_indel_len
-                            for ii in range(curr_indel_len):
-                                out_indel_pos[i_slot + ii] = indel_pos_buf[ii] + c_start
-                                out_indel_kinds[i_slot + ii] = indel_kind_buf[ii]
+                            _emit_gene(
+                                out_bufs,
+                                gene_off + n_genes,
+                                cds_off + total_cds,
+                                indel_off + total_indels,
+                                g_s,
+                                g_e,
+                                codon_start,
+                                is_partial_gene,
+                                contig_idx,
+                                c_start,
+                                dna_buf,
+                                dna_len,
+                                lut_rc,
+                                indel_pos_buf,
+                                indel_kind_buf,
+                                curr_indel_len,
+                            )
                         n_genes += 1
                         total_cds += dna_len
                         total_indels += curr_indel_len
@@ -792,7 +834,6 @@ def _decode_and_count_windows(
     encode_lut: np.ndarray,
     lut_rc: np.ndarray,
     win_table: tuple[np.ndarray, ...],
-    whole_genome: bool,
     include_phage: bool,
     min_gene_len: int,
     local_gc_window: int,
@@ -890,7 +931,6 @@ def _decode_and_count_windows(
         best_st, path = _viterbi_forward(
             enc_sub,
             cg_sub,
-            whole_genome,
             include_phage,
             tr,
             tr_mi,
@@ -919,7 +959,6 @@ def _decode_and_count_windows(
             enc_sub,
             vp_sub,
             cg_sub,
-            whole_genome,
             include_phage,
             min_gene_len,
             score_params,
@@ -952,7 +991,6 @@ def _write_windows_parallel(
     lut_rc: np.ndarray,
     win_table: tuple[np.ndarray, ...],
     win_offsets: tuple[np.ndarray, ...],
-    whole_genome: bool,
     include_phage: bool,
     min_gene_len: int,
     score_params: tuple[np.ndarray, ...],
@@ -986,7 +1024,6 @@ def _write_windows_parallel(
             encoded_flat[vp_off : vp_off + w_len],
             vpath_flat[vp_off : vp_off + w_len],
             cg_bins_flat[vp_off : vp_off + w_len],
-            whole_genome,
             include_phage,
             min_gene_len,
             score_params,

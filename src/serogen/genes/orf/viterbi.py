@@ -152,7 +152,6 @@ def _avoid_insertion_stop(
 def _viterbi_forward(
     seq: np.ndarray,
     cg_bins: np.ndarray,
-    whole_genome: bool,
     include_phage: bool,
     tr: np.ndarray,
     tr_mi: np.ndarray,
@@ -375,7 +374,7 @@ def _viterbi_forward(
                 val_mr = temp_im
                 p_mr = i_prev
 
-            if phase == 0 and include_phage and alpha[r_prev, Sr] < 1e300 and path[t - 1, Sr] == Er:
+            if phase == 0 and alpha[r_prev, Sr] < 1e300 and path[t - 1, Sr] == Er:
                 temp_sr = alpha[r_prev, Sr] - em
                 if temp_sr < val_mr:
                     val_mr = temp_sr
@@ -471,17 +470,16 @@ def _viterbi_forward(
                         alpha[r_next2, Sr] = temp_a
                         path[t, Sr] = e_prev
 
-                if include_phage:
-                    for prev_val, e_prev, tr_pen in ((prev_er_at_curr, Er, tr_es), (prev_e_at_curr, E, tr_es1)):
-                        temp_a = prev_val - tr_pen
-                        if temp_a < alpha[r_next2, Sr]:
-                            alpha[r_next2, Sr] = temp_a
-                            path[t, Sr] = e_prev
-                    if t + 3 < seq_len and rev_start_mask_64[tri_arr[t + 1]]:
-                        temp_a = alpha[r_curr, M6r] - tr_ge - tr_es
-                        if temp_a < alpha[r_next2, Sr]:
-                            alpha[r_next2, Sr] = temp_a
-                            path[t + 2, Sr] = Er
+                for prev_val, e_prev, tr_pen in ((prev_er_at_curr, Er, tr_es), (prev_e_at_curr, E, tr_es1)):
+                    temp_a = prev_val - tr_pen
+                    if temp_a < alpha[r_next2, Sr]:
+                        alpha[r_next2, Sr] = temp_a
+                        path[t, Sr] = e_prev
+                if t + 3 < seq_len and rev_start_mask_64[tri_arr[t + 1]]:
+                    temp_a = alpha[r_curr, M6r] - tr_ge - tr_es
+                    if temp_a < alpha[r_next2, Sr]:
+                        alpha[r_next2, Sr] = temp_a
+                        path[t + 2, Sr] = Er
 
                 alpha[r_next2, Sr] -= rev_stop_log_priors_64[tri_t]
                 start_freq = 0.0
@@ -510,16 +508,15 @@ def _viterbi_forward(
                         alpha[r_next2, S] = temp_a
                         path[t, S] = e_prev
 
-                if include_phage:
-                    temp_a = prev_e_at_curr - tr_es
+                temp_a = prev_e_at_curr - tr_es
+                if temp_a < alpha[r_next2, S]:
+                    alpha[r_next2, S] = temp_a
+                    path[t, S] = E
+                if t + 3 < seq_len and stop_mask_64[tri_arr[t + 1]]:
+                    temp_a = min(alpha[r_curr, M6], alpha[r_curr, M3]) - tr_ge - tr_es
                     if temp_a < alpha[r_next2, S]:
                         alpha[r_next2, S] = temp_a
-                        path[t, S] = E
-                    if t + 3 < seq_len and stop_mask_64[tri_arr[t + 1]]:
-                        temp_a = min(alpha[r_curr, M6], alpha[r_curr, M3]) - tr_ge - tr_es
-                        if temp_a < alpha[r_next2, S]:
-                            alpha[r_next2, S] = temp_a
-                            path[t + 2, S] = E
+                        path[t + 2, S] = E
 
                 alpha[r_next2, S] -= start_log_priors_64[tri_t]
                 start_freq = 0.0
