@@ -1,5 +1,3 @@
-# SeroGen
-
 <div class="serogen-hero" markdown>
 
 # SeroGen
