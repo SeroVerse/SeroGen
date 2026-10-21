@@ -11,6 +11,8 @@ on:
       - "src/**"
       - "zensical.toml"
       - "pyproject.toml"
+      - "uv.lock"
+      - ".python-version"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -37,11 +39,13 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
         with:
+          version: "latest"
+          python-version: "3.14"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
       - name: Install documentation dependencies
-        run: uv sync --frozen --group docs
+        run: uv sync --frozen --python 3.14 --group docs
 
       - name: Export Marimo slide decks from cached session snapshots
         run: |

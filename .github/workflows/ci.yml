@@ -31,11 +31,13 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
         with:
+          version: "latest"
+          python-version: "3.14"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
       - name: Install Python 3.14 & dependencies
-        run: uv sync --frozen --group lint --group typing
+        run: uv sync --frozen --python 3.14 --group lint --group typing
 
       - name: Run Ruff linter
         run: uv run --no-sync ruff check --output-format=github .
@@ -62,6 +64,8 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
         with:
+          version: "latest"
+          python-version: ${{ matrix.python-version }}
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
