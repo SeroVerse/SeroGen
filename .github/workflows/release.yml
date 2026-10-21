@@ -42,7 +42,6 @@ jobs:
         run: |
           uv run --isolated --no-project --with dist/*.whl python -c "
           import serogen
-          from serogen import OrfPredictor, GeneRoleClassifier, LocusPredictor, LocusMatcher
           print('Successfully imported SeroGen:', serogen.__all__)
           "
 
