@@ -7,8 +7,8 @@ import numpy as np
 from scipy.optimize import minimize
 
 from serogen.genes.roles import GeneRole
-from serogen.loci.archetypes import LocusArchetype
-from serogen.loci.models import ArchetypeTensors, Loci, Locus, get_archetype_tensors
+from serogen.loci.archetypes import ArchetypeTensors, LocusArchetype, get_archetype_tensors
+from serogen.loci.models import Loci, Locus
 
 ArchetypeInput = (
     Locus | Loci | np.ndarray | Sequence[int | GeneRole] | Sequence[Locus | np.ndarray | Sequence[int | GeneRole]]
@@ -19,7 +19,7 @@ class ArchetypeClassifier:
     """Scikit-learn compatible classifier and segment scorer for `LocusArchetype`s.
 
     Encapsulates all discrete bitmask evaluations and continuous noisy-OR log-likelihood-ratio
-    (LLR) scoring over [`ArchetypeTensors`][serogen.loci.models.ArchetypeTensors]. Works out-of-the-box
+    (LLR) scoring over [`ArchetypeTensors`][serogen.loci.archetypes.ArchetypeTensors]. Works out-of-the-box
     with domain-calibrated weights (`w_comp`, `w_incomp`, `w_llr`, `unknown_logit`), and optionally
     supports empirical weight calibration via `.fit(X, y)` on labeled loci.
     """

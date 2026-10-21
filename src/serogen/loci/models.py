@@ -1,162 +1,19 @@
-"""Data models for biosynthetic gene clusters (`Locus`, `Loci`), syntenic graph primitives, and archetype tensors."""
+"""Data models for biosynthetic gene clusters (`Locus`, `Loci`) and syntenic graph primitives."""
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum
-from functools import lru_cache
-from pathlib import Path
 from typing import Any, Self, cast, overload
 
 import numpy as np
-from scipy.sparse import csr_array, diags
-from scipy.stats import wasserstein_distance_nd
+from scipy.sparse import csr_array
 
 from serogen.core.graph.models import TAG_EDGE, BitField, DirectedEdge, GraphBatch, GraphModel, IntNode
 from serogen.core.interval import Interval, Intervals, Strand
 from serogen.core.seq.clustering import Clusterer, Clusters
-from serogen.core.seq.seq import Sequences
-from serogen.genes.models import Genes, Indels
+from serogen.genes.models import Genes
 from serogen.genes.roles import GeneRole
-from serogen.loci.archetypes import ArchetypeCategory, LocusArchetype, _get_archetype_specs, roles_to_mask
-
-
-# ----------------------------------------------------------------------------------------------------------------------
-# Precomputed Archetype Scoring & Segmentation Tensors
-# ----------------------------------------------------------------------------------------------------------------------
-@dataclass(frozen=True, slots=True)
-class ArchetypeTensors:
-    """Immutable container holding precomputed bitmask and role-indicator tensors for all `LocusArchetype`s.
-
-    Encapsulates the vectorized lookup tables required by [`ArchetypeClassifier`][serogen.loci.classifier.ArchetypeClassifier]
-    and [`LocusSegmenter`][serogen.loci.segmenter.LocusSegmenter], analogous to [`HMM`][serogen.genes.models.HMM]
-    in `serogen.genes.models`.
-    """
-
-    names: np.ndarray[tuple[int], np.dtype[np.str_]]
-    categories: np.ndarray[tuple[int], np.dtype[np.str_]]
-    forbidden_masks: np.ndarray[tuple[int], np.dtype[np.uint32]]
-    cargo_masks: np.ndarray[tuple[int], np.dtype[np.uint32]]
-    required_masks: np.ndarray[tuple[int], np.dtype[np.uint32]]
-    all_relevant_masks: np.ndarray[tuple[int], np.dtype[np.uint32]]
-    module_masks: np.ndarray[tuple[int, int], np.dtype[np.uint32]]
-    num_modules: np.ndarray[tuple[int], np.dtype[np.int32]]
-    active_module_mask: np.ndarray[tuple[int, int], np.dtype[np.bool_]]
-    module_indicators: np.ndarray[tuple[int, int, int], np.dtype[np.float64]]
-    forbidden_indicators: np.ndarray[tuple[int, int], np.dtype[np.float64]]
-    relevant_indicators: np.ndarray[tuple[int, int], np.dtype[np.float64]]
-    null_priors: np.ndarray[tuple[int], np.dtype[np.float64]]
-    machinery_roles: np.ndarray[tuple[int], np.dtype[np.int32]]
-    biosynthetic_mask: np.ndarray[tuple[int], np.dtype[np.bool_]]
-
-    @classmethod
-    def build(cls) -> Self:
-        """Construct and freeze all archetype bitmask and indicator tensors from `LocusArchetype` specs."""
-        specs = _get_archetype_specs()
-        n_arch = len(LocusArchetype)
-        n_roles = len(GeneRole)
-        max_mods = max(s.num_modules for s in specs)
-
-        names = np.array([s.name for s in specs], dtype="U16")
-        categories = np.array([s.category.value for s in specs], dtype="U20")
-        forbidden_masks = np.array([s.forbidden_mask for s in specs], dtype=np.uint32)
-        cargo_masks = np.array([s.cargo_mask for s in specs], dtype=np.uint32)
-        required_masks = np.array([s.required_mask for s in specs], dtype=np.uint32)
-        all_relevant_masks = np.array([s.all_relevant_mask for s in specs], dtype=np.uint32)
-
-        module_masks = np.zeros((n_arch, max_mods), dtype=np.uint32)
-        num_modules = np.zeros(n_arch, dtype=np.int32)
-        for a_idx, spec in enumerate(specs):
-            num_modules[a_idx] = spec.num_modules
-            for m_idx, m_mask in enumerate(spec.module_masks):
-                module_masks[a_idx, m_idx] = m_mask
-
-        module_indicators = np.zeros((n_arch, max_mods, n_roles), dtype=np.float64)
-        forbidden_indicators = np.zeros((n_arch, n_roles), dtype=np.float64)
-        relevant_indicators = np.zeros((n_arch, n_roles), dtype=np.float64)
-
-        for a_idx in range(n_arch):
-            f_mask = int(forbidden_masks[a_idx])
-            r_mask = int(all_relevant_masks[a_idx])
-            n_m = int(num_modules[a_idx])
-            for r_idx in range(n_roles):
-                bit = 1 << r_idx
-                if f_mask & bit:
-                    forbidden_indicators[a_idx, r_idx] = 1.0
-                if r_mask & bit:
-                    relevant_indicators[a_idx, r_idx] = 1.0
-                for m_idx in range(n_m):
-                    if int(module_masks[a_idx, m_idx]) & bit:
-                        module_indicators[a_idx, m_idx, r_idx] = 1.0
-
-        null_priors = np.full(n_roles, 0.005, dtype=np.float64)
-        null_priors[int(GeneRole.UNKNOWN)] = 0.825
-        null_priors[int(GeneRole.TRANSPOSASE)] = 0.015
-        null_priors[int(GeneRole.INTEGRASE)] = 0.015
-        null_priors /= null_priors.sum()
-
-        active_module_mask = np.arange(max_mods)[None, :] < num_modules[:, None]
-
-        machinery_roles = np.array(
-            [
-                int(GeneRole.FLIPPASE),
-                int(GeneRole.POLYMERASE),
-                int(GeneRole.COPOLYMERASE),
-                int(GeneRole.KINASE),
-                int(GeneRole.PHOSPHATASE),
-                int(GeneRole.ABC_PERMEASE),
-                int(GeneRole.ABC_ATPASE),
-                int(GeneRole.LIGASE),
-                int(GeneRole.TRANSLOCON),
-                int(GeneRole.CAPSULE_ANCHOR),
-                int(GeneRole.TRANSMEMBRANE_SYNTHASE),
-                int(GeneRole.INITIATOR),
-            ],
-            dtype=np.int32,
-        )
-        biosynthetic_mask = np.array([r.is_biosynthetic for r in GeneRole], dtype=np.bool_)
-
-        for arr in (
-            names,
-            categories,
-            forbidden_masks,
-            cargo_masks,
-            required_masks,
-            all_relevant_masks,
-            module_masks,
-            num_modules,
-            active_module_mask,
-            module_indicators,
-            forbidden_indicators,
-            relevant_indicators,
-            null_priors,
-            machinery_roles,
-            biosynthetic_mask,
-        ):
-            arr.setflags(write=False)
-
-        return cls(
-            names=names,
-            categories=categories,
-            forbidden_masks=forbidden_masks,
-            cargo_masks=cargo_masks,
-            required_masks=required_masks,
-            all_relevant_masks=all_relevant_masks,
-            module_masks=module_masks,
-            num_modules=num_modules,
-            active_module_mask=active_module_mask,
-            module_indicators=module_indicators,
-            forbidden_indicators=forbidden_indicators,
-            relevant_indicators=relevant_indicators,
-            null_priors=null_priors,
-            machinery_roles=machinery_roles,
-            biosynthetic_mask=biosynthetic_mask,
-        )
-
-
-@lru_cache(maxsize=1)
-def get_archetype_tensors() -> ArchetypeTensors:
-    """Return the cached singleton `ArchetypeTensors` instance."""
-    return ArchetypeTensors.build()
+from serogen.loci.archetypes import ArchetypeCategory, LocusArchetype, get_archetype_tensors, roles_to_mask
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -983,24 +840,6 @@ class Loci(GraphBatch[Locus, "Loci"]):
             mask &= np.isin(self.archetypes, allowed_arch_ids)
         return self[mask]
 
-    def without(self, names_or_indices: str | int | Iterable[str | int]) -> Self:
-        """Return a `Loci` subset excluding the specified locus `name`(s) or 0-based integer index(es)."""
-        n = len(self)
-        if n == 0:
-            return self
-        items = [names_or_indices] if isinstance(names_or_indices, (str, int, np.integer)) else list(names_or_indices)
-        keep = np.ones(n, dtype=np.bool_)
-        for item in items:
-            if isinstance(item, (int, np.integer)):
-                idx = int(item)
-                if idx < 0:
-                    idx += n
-                if 0 <= idx < n:
-                    keep[idx] = False
-            else:
-                keep &= self.names != str(item)
-        return self[keep]
-
     @classmethod
     def empty(cls) -> Self:
         """Create an empty 0-length `Loci` container."""
@@ -1126,28 +965,6 @@ class Loci(GraphBatch[Locus, "Loci"]):
             names=np.array(names_list, dtype=str),
         )
 
-    from_loci = from_list
-
-    @classmethod
-    def from_genes_list(
-        cls,
-        genes_list: Sequence[Genes | Sequence[str | bytes | int | GeneRole] | np.ndarray],
-        *,
-        strands_list: Sequence[Sequence[int] | np.ndarray] | None = None,
-        lengths_list: Sequence[Sequence[int] | np.ndarray] | None = None,
-        clusters_list: Sequence[Sequence[int] | np.ndarray] | None = None,
-        names: Sequence[str] | None = None,
-    ) -> Self:
-        """Construct a `Loci` batch from a list of per-locus gene symbol/role sequences or `Genes` objects."""
-        loci_objs: list[Locus] = []
-        for i, g in enumerate(genes_list):
-            s_i = strands_list[i] if strands_list is not None else None
-            l_i = lengths_list[i] if lengths_list is not None else None
-            c_i = clusters_list[i] if clusters_list is not None else None
-            nm_i = names[i] if names is not None else ""
-            loci_objs.append(Locus.from_genes(g, strands=s_i, lengths=l_i, clusters=c_i, name=nm_i))
-        return cls.from_list(loci_objs)
-
     def canonicalize_strands(self) -> Self:
         """Orient all loci in the batch into canonical 5' -> 3' operon order (`strand = +1`)."""
         if len(self) == 0 or bool(np.all(self.intervals.strands >= 0)):
@@ -1213,7 +1030,7 @@ class Loci(GraphBatch[Locus, "Loci"]):
         use_emb = classifier is not None or engine.embedding_weight > 0.0
         clf = classifier
         if use_emb and clf is None:
-            from serogen.genes.classifier import GeneRoleClassifier
+            from serogen.genes.cnn import GeneRoleClassifier
 
             clf = GeneRoleClassifier.pretrained()
 
@@ -1297,181 +1114,6 @@ class Loci(GraphBatch[Locus, "Loci"]):
 
         matcher = LocusMatcher(self, **matcher_kwargs)
         return matcher.match(query, top_k=top_k, min_score=min_score, sort=sort)
-
-    def role_masks(self) -> np.ndarray[tuple[int], np.dtype[np.uint32]]:
-        """Compute the 32-bit `GeneRole` presence bitmask for each locus in the batch."""
-        n = len(self)
-        out = np.zeros(n, dtype=np.uint32)
-        if n == 0 or len(self.node_types) == 0:
-            return out
-        role_bits = np.uint32(1) << GeneNode.ROLE_ID.extract_array(self.node_types)
-        for i in range(n):
-            s = int(self.node_offsets[i])
-            e = int(self.node_offsets[i + 1])
-            if e > s:
-                out[i] = np.bitwise_or.reduce(role_bits[s:e])
-        return out
-
-    def wwl_distance(self, iterations: int = 2) -> np.ndarray[tuple[int, int], np.dtype[np.float64]]:
-        """Compute the pairwise Wasserstein Weisfeiler-Lehman (WWL) topological distance matrix across loci."""
-        n_nodes = len(self.node_types)
-        n_loci = len(self)
-        if n_nodes == 0 or n_loci == 0:
-            return np.zeros((n_loci, n_loci), dtype=np.float64)
-
-        features = GeneRole.feature_matrix()[self.roles].astype(np.float64)
-        adj_rows = np.concatenate([self.edge_sources, self.edge_targets])
-        adj_cols = np.concatenate([self.edge_targets, self.edge_sources])
-        adj = csr_array((np.ones(len(adj_rows), dtype=np.float64), (adj_rows, adj_cols)), shape=(n_nodes, n_nodes))
-
-        deg = np.asarray(adj.sum(axis=1), dtype=np.float64).ravel()
-        deg[deg == 0.0] = 1.0
-        adj_norm = diags(1.0 / deg) @ adj
-
-        embeddings = [features]
-        h = features
-        for _ in range(iterations):
-            h = 0.5 * h + 0.5 * (adj_norm @ h)
-            embeddings.append(h)
-        final_emb = np.concatenate(embeddings, axis=1)
-
-        dist = np.zeros((n_loci, n_loci), dtype=np.float64)
-        for i in range(n_loci):
-            si, ei = int(self.node_offsets[i]), int(self.node_offsets[i + 1])
-            xi = final_emb[si:ei]
-            for j in range(i + 1, n_loci):
-                sj, ej = int(self.node_offsets[j]), int(self.node_offsets[j + 1])
-                xj = final_emb[sj:ej]
-                d = float(wasserstein_distance_nd(xi, xj)) if (len(xi) > 0 and len(xj) > 0) else 1.0
-                dist[i, j] = d
-                dist[j, i] = d
-        return dist
-
-    def to_npz_dict(self, prefix: str = "locus_") -> dict[str, np.ndarray]:
-        """Export all SoA arrays of this `Loci` container into a flat dictionary suitable for `np.savez_compressed`."""
-        genes = self.genes
-        p = prefix
-        gp = f"{prefix}gene_" if prefix else "gene_"
-        trans = genes._translations
-        return {
-            f"{p}node_types": self.node_types,
-            f"{p}node_offsets": self.node_offsets,
-            f"{p}edge_sources": self.edge_sources,
-            f"{p}edge_targets": self.edge_targets,
-            f"{p}edge_types": self.edge_types,
-            f"{p}edge_offsets": self.edge_offsets,
-            f"{p}starts": self.intervals.starts,
-            f"{p}ends": self.intervals.ends,
-            f"{p}strands": self.intervals.strands,
-            f"{p}contig_indices": self.contig_indices,
-            f"{p}archetypes": self.archetypes,
-            f"{p}completeness": self.completeness,
-            f"{p}scores": self.scores,
-            f"{p}is_tandem_split": self.is_tandem_split,
-            f"{p}names": self.names,
-            f"{gp}starts": genes.intervals.starts,
-            f"{gp}ends": genes.intervals.ends,
-            f"{gp}strands": genes.intervals.strands,
-            f"{gp}contig_indices": genes.contig_indices,
-            f"{gp}is_partial": genes.is_partial,
-            f"{gp}seq_ids": genes.seqs.ids,
-            f"{gp}seq_bytes": genes.seqs.seqs,
-            f"{gp}seq_offsets": genes.seqs.offsets,
-            f"{gp}seq_lengths": genes.seqs.lengths,
-            f"{gp}trans_ids": trans.ids if trans is not None else np.empty(0, dtype="S1"),
-            f"{gp}trans_bytes": trans.seqs if trans is not None else np.empty(0, dtype=np.uint8),
-            f"{gp}trans_offsets": trans.offsets if trans is not None else np.empty(0, dtype=np.int32),
-            f"{gp}trans_lengths": trans.lengths if trans is not None else np.empty(0, dtype=np.int32),
-            f"{gp}indel_positions": genes.indels.positions,
-            f"{gp}indel_kinds": genes.indels.kinds,
-            f"{gp}indel_offsets": genes.indels.offsets,
-            f"{gp}indel_lengths": genes.indels.lengths,
-        }
-
-    @classmethod
-    def from_npz_dict(cls, data: Mapping[str, Any], prefix: str = "locus_") -> Self:
-        """Reconstruct a `Loci` container from a flat `.npz` archive mapping (zero-pickle)."""
-        p = prefix
-        gp = f"{prefix}gene_" if prefix else "gene_"
-        node_offsets = data[f"{p}node_offsets"]
-        if len(node_offsets) <= 1:
-            return cls.empty()
-
-        gene_intervals = Intervals(
-            starts=data[f"{gp}starts"],
-            ends=data[f"{gp}ends"],
-            strands=data[f"{gp}strands"],
-        )
-        gene_seqs = Sequences(
-            ids=data[f"{gp}seq_ids"],
-            seqs=data[f"{gp}seq_bytes"],
-            offsets=data[f"{gp}seq_offsets"],
-            lengths=data[f"{gp}seq_lengths"],
-        )
-        trans_seqs: Sequences | None = None
-        if f"{gp}trans_lengths" in data and len(data[f"{gp}trans_lengths"]) > 0:
-            trans_seqs = Sequences(
-                ids=data[f"{gp}trans_ids"],
-                seqs=data[f"{gp}trans_bytes"],
-                offsets=data[f"{gp}trans_offsets"],
-                lengths=data[f"{gp}trans_lengths"],
-            )
-        gene_indels = Indels(
-            positions=data[f"{gp}indel_positions"],
-            kinds=data[f"{gp}indel_kinds"],
-            offsets=data[f"{gp}indel_offsets"],
-            lengths=data[f"{gp}indel_lengths"],
-        )
-        is_partial = (
-            data[f"{gp}is_partial"] if f"{gp}is_partial" in data else np.zeros(len(gene_intervals), dtype=np.bool_)
-        )
-        genes = Genes(
-            intervals=gene_intervals,
-            seqs=gene_seqs if len(gene_seqs) > 0 else None,
-            contig_indices=data[f"{gp}contig_indices"],
-            indels=gene_indels,
-            _translations=trans_seqs,
-            is_partial=is_partial,
-        )
-        names = data[f"{p}names"] if f"{p}names" in data else np.full(len(node_offsets) - 1, "", dtype="U1")
-        return cls(
-            node_types=data[f"{p}node_types"],
-            node_offsets=node_offsets,
-            edge_sources=data[f"{p}edge_sources"],
-            edge_targets=data[f"{p}edge_targets"],
-            edge_types=data[f"{p}edge_types"],
-            edge_offsets=data[f"{p}edge_offsets"],
-            genes=genes,
-            intervals=Intervals(
-                starts=data[f"{p}starts"],
-                ends=data[f"{p}ends"],
-                strands=data[f"{p}strands"],
-            ),
-            contig_indices=data[f"{p}contig_indices"],
-            archetypes=data[f"{p}archetypes"],
-            completeness=data[f"{p}completeness"],
-            scores=data[f"{p}scores"],
-            is_tandem_split=data[f"{p}is_tandem_split"],
-            names=names,
-        )
-
-    def save(self, path: Path | str) -> Path:
-        """Save this `Loci` container to a compressed NumPy `.npz` archive (`allow_pickle=False`)."""
-        p = Path(path)
-        if not p.suffix:
-            p = p.with_suffix(".npz")
-        p.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(p, **cast(Any, self.to_npz_dict(prefix="locus_")))
-        return p
-
-    @classmethod
-    def load(cls, path: Path | str) -> Self:
-        """Load a `Loci` container from a compressed NumPy `.npz` archive (`allow_pickle=False`)."""
-        p = Path(path)
-        if not p.suffix and not p.exists():
-            p = p.with_suffix(".npz")
-        with np.load(p, allow_pickle=False) as data:
-            return cls.from_npz_dict(data, prefix="locus_")
 
     @overload
     def __getitem__(self, item: int | np.integer[Any] | str) -> Locus: ...
@@ -1560,7 +1202,3 @@ class Loci(GraphBatch[Locus, "Loci"]):
             is_tandem_split=self.is_tandem_split[kept_indices],
             names=self.names[kept_indices],
         )
-
-
-GeneCluster = Locus
-GeneClusters = Loci

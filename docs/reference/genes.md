@@ -8,9 +8,9 @@ Single-pass bacterial and prophage Open Reading Frame (ORF) prediction, function
 
 ---
 
-## ORF Prediction (`serogen.genes.predictor`)
+## ORF Prediction (`serogen.genes.orf.predictor`)
 
-::: serogen.genes.predictor
+::: serogen.genes.orf.predictor
 
 ---
 
@@ -26,6 +26,6 @@ Single-pass bacterial and prophage Open Reading Frame (ORF) prediction, function
 
 ---
 
-## 1D CNN Role Classifier (`serogen.genes.classifier`)
+## 1D CNN Role Classifier (`serogen.genes.cnn`)
 
-::: serogen.genes.classifier
+::: serogen.genes.cnn

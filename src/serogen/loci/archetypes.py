@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from functools import lru_cache
+from typing import Self
 
 import numpy as np
 
@@ -486,6 +487,141 @@ def _get_archetype_lookup() -> dict[str, LocusArchetype]:
         for alias in spec.aliases:
             lookup[alias.strip().lower()] = arch
     return lookup
+
+
+@dataclass(frozen=True, slots=True)
+class ArchetypeTensors:
+    """Immutable container holding precomputed bitmask and role-indicator tensors for all `LocusArchetype`s.
+
+    Encapsulates the vectorized lookup tables required by [`ArchetypeClassifier`][serogen.loci.classifier.ArchetypeClassifier]
+    and [`LocusSegmenter`][serogen.loci.segmenter.LocusSegmenter].
+    """
+
+    names: np.ndarray[tuple[int], np.dtype[np.str_]]
+    categories: np.ndarray[tuple[int], np.dtype[np.str_]]
+    forbidden_masks: np.ndarray[tuple[int], np.dtype[np.uint32]]
+    cargo_masks: np.ndarray[tuple[int], np.dtype[np.uint32]]
+    required_masks: np.ndarray[tuple[int], np.dtype[np.uint32]]
+    all_relevant_masks: np.ndarray[tuple[int], np.dtype[np.uint32]]
+    module_masks: np.ndarray[tuple[int, int], np.dtype[np.uint32]]
+    num_modules: np.ndarray[tuple[int], np.dtype[np.int32]]
+    active_module_mask: np.ndarray[tuple[int, int], np.dtype[np.bool_]]
+    module_indicators: np.ndarray[tuple[int, int, int], np.dtype[np.float64]]
+    forbidden_indicators: np.ndarray[tuple[int, int], np.dtype[np.float64]]
+    relevant_indicators: np.ndarray[tuple[int, int], np.dtype[np.float64]]
+    null_priors: np.ndarray[tuple[int], np.dtype[np.float64]]
+    machinery_roles: np.ndarray[tuple[int], np.dtype[np.int32]]
+    biosynthetic_mask: np.ndarray[tuple[int], np.dtype[np.bool_]]
+
+    @classmethod
+    def build(cls) -> Self:
+        """Construct and freeze all archetype bitmask and indicator tensors from `LocusArchetype` specs."""
+        specs = _get_archetype_specs()
+        n_arch = len(LocusArchetype)
+        n_roles = len(GeneRole)
+        max_mods = max(s.num_modules for s in specs)
+
+        names = np.array([s.name for s in specs], dtype="U16")
+        categories = np.array([s.category.value for s in specs], dtype="U20")
+        forbidden_masks = np.array([s.forbidden_mask for s in specs], dtype=np.uint32)
+        cargo_masks = np.array([s.cargo_mask for s in specs], dtype=np.uint32)
+        required_masks = np.array([s.required_mask for s in specs], dtype=np.uint32)
+        all_relevant_masks = np.array([s.all_relevant_mask for s in specs], dtype=np.uint32)
+
+        module_masks = np.zeros((n_arch, max_mods), dtype=np.uint32)
+        num_modules = np.zeros(n_arch, dtype=np.int32)
+        for a_idx, spec in enumerate(specs):
+            num_modules[a_idx] = spec.num_modules
+            for m_idx, m_mask in enumerate(spec.module_masks):
+                module_masks[a_idx, m_idx] = m_mask
+
+        module_indicators = np.zeros((n_arch, max_mods, n_roles), dtype=np.float64)
+        forbidden_indicators = np.zeros((n_arch, n_roles), dtype=np.float64)
+        relevant_indicators = np.zeros((n_arch, n_roles), dtype=np.float64)
+
+        for a_idx in range(n_arch):
+            f_mask = int(forbidden_masks[a_idx])
+            r_mask = int(all_relevant_masks[a_idx])
+            n_m = int(num_modules[a_idx])
+            for r_idx in range(n_roles):
+                bit = 1 << r_idx
+                if f_mask & bit:
+                    forbidden_indicators[a_idx, r_idx] = 1.0
+                if r_mask & bit:
+                    relevant_indicators[a_idx, r_idx] = 1.0
+                for m_idx in range(n_m):
+                    if int(module_masks[a_idx, m_idx]) & bit:
+                        module_indicators[a_idx, m_idx, r_idx] = 1.0
+
+        null_priors = np.full(n_roles, 0.005, dtype=np.float64)
+        null_priors[int(GeneRole.UNKNOWN)] = 0.825
+        null_priors[int(GeneRole.TRANSPOSASE)] = 0.015
+        null_priors[int(GeneRole.INTEGRASE)] = 0.015
+        null_priors /= null_priors.sum()
+
+        active_module_mask = np.arange(max_mods)[None, :] < num_modules[:, None]
+
+        machinery_roles = np.array(
+            [
+                int(GeneRole.FLIPPASE),
+                int(GeneRole.POLYMERASE),
+                int(GeneRole.COPOLYMERASE),
+                int(GeneRole.KINASE),
+                int(GeneRole.PHOSPHATASE),
+                int(GeneRole.ABC_PERMEASE),
+                int(GeneRole.ABC_ATPASE),
+                int(GeneRole.LIGASE),
+                int(GeneRole.TRANSLOCON),
+                int(GeneRole.CAPSULE_ANCHOR),
+                int(GeneRole.TRANSMEMBRANE_SYNTHASE),
+                int(GeneRole.INITIATOR),
+            ],
+            dtype=np.int32,
+        )
+        biosynthetic_mask = np.array([r.is_biosynthetic for r in GeneRole], dtype=np.bool_)
+
+        for arr in (
+            names,
+            categories,
+            forbidden_masks,
+            cargo_masks,
+            required_masks,
+            all_relevant_masks,
+            module_masks,
+            num_modules,
+            active_module_mask,
+            module_indicators,
+            forbidden_indicators,
+            relevant_indicators,
+            null_priors,
+            machinery_roles,
+            biosynthetic_mask,
+        ):
+            arr.setflags(write=False)
+
+        return cls(
+            names=names,
+            categories=categories,
+            forbidden_masks=forbidden_masks,
+            cargo_masks=cargo_masks,
+            required_masks=required_masks,
+            all_relevant_masks=all_relevant_masks,
+            module_masks=module_masks,
+            num_modules=num_modules,
+            active_module_mask=active_module_mask,
+            module_indicators=module_indicators,
+            forbidden_indicators=forbidden_indicators,
+            relevant_indicators=relevant_indicators,
+            null_priors=null_priors,
+            machinery_roles=machinery_roles,
+            biosynthetic_mask=biosynthetic_mask,
+        )
+
+
+@lru_cache(maxsize=1)
+def get_archetype_tensors() -> ArchetypeTensors:
+    """Return the cached singleton `ArchetypeTensors` instance."""
+    return ArchetypeTensors.build()
 
 
 LocusArchetypes = LocusArchetype

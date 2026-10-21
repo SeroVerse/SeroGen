@@ -11,7 +11,8 @@ import numpy as np
 
 from serogen.core.collections import BatchedContainer, RaggedArrayContainer
 from serogen.core.interval import Interval, Intervals
-from serogen.core.seq import GeneticCode, Sequence, Sequences
+from serogen.core.seq.alphabet import GeneticCode
+from serogen.core.seq.seq import Sequence, Sequences
 
 
 class IndelKind(IntEnum):

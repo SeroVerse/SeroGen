@@ -1,3 +1,5 @@
+"""Graph containers, alignment, arborescence, GNN, and layout algorithms."""
+
 from serogen.core.graph.align import (
     Alignment,
     AlignmentConfig,

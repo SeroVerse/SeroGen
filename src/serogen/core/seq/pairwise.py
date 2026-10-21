@@ -118,44 +118,6 @@ class PairwiseAlignments(BatchedContainer["PairwiseAlignment", "PairwiseAlignmen
         """
         return len(self.scores)
 
-    def to_dict(self) -> dict[str, np.ndarray[tuple[int], np.dtype[np.int32]]]:
-        r"""Convert the alignment batch to a dictionary of NumPy arrays for serialization.
-
-        Returns:
-            dict[str, np.ndarray[tuple[int], np.dtype[np.int32]]]: Dictionary mapping attribute names to arrays.
-        """
-        return {
-            "scores": self.scores,
-            "matches": self.matches,
-            "mismatches": self.mismatches,
-            "gaps": self.gaps,
-            "q_starts": self.q_starts,
-            "q_ends": self.q_ends,
-            "t_starts": self.t_starts,
-            "t_ends": self.t_ends,
-        }
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> PairwiseAlignments:
-        r"""Deserialize a PairwiseAlignments batch from a dictionary of array-like data.
-
-        Args:
-            d (dict[str, Any]): Dictionary containing alignment field arrays.
-
-        Returns:
-            PairwiseAlignments: Deserialized pairwise alignments container.
-        """
-        return cls(
-            np.array(d["scores"], dtype=np.int32),
-            np.array(d["matches"], dtype=np.int32),
-            np.array(d["mismatches"], dtype=np.int32),
-            np.array(d["gaps"], dtype=np.int32),
-            np.array(d["q_starts"], dtype=np.int32),
-            np.array(d["q_ends"], dtype=np.int32),
-            np.array(d["t_starts"], dtype=np.int32),
-            np.array(d["t_ends"], dtype=np.int32),
-        )
-
     @overload
     def __getitem__(self, item: int | np.integer[Any]) -> PairwiseAlignment: ...
 

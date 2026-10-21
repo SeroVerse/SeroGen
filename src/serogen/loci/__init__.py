@@ -1,46 +1,43 @@
-"""Biosynthetic locus models, archetypes, classification, segmentation, and prediction."""
+"""Biosynthetic locus models, archetypes, classification, segmentation, prediction, and matching."""
 
-from .archetypes import (
+from serogen.loci.archetypes import (
     ArchetypeCategory,
     ArchetypeSpec,
+    ArchetypeTensors,
     LocusArchetype,
     LocusArchetypes,
+    get_archetype_tensors,
     mask_to_roles,
     roles_to_mask,
 )
-from .classifier import ArchetypeClassifier
-from .database import LocusDatabase, SerotypeDatabase, SerotypeRecord
-from .matcher import (
+from serogen.loci.classifier import ArchetypeClassifier
+from serogen.loci.matcher import (
     BENIGN_VARIANT_MASK,
+    LocusMatch,
     LocusMatcher,
+    LocusMatches,
     LocusNodeCostStrategy,
     Match,
     Matches,
     MatchType,
 )
-from .models import (
-    ArchetypeTensors,
-    GeneCluster,
-    GeneClusters,
+from serogen.loci.models import (
     GeneNode,
     IntergenicEdge,
     IntergenicOrientation,
     IntergenicType,
     Loci,
     Locus,
-    get_archetype_tensors,
 )
-from .predictor import LocusFinder, LocusPredictor
-from .segmenter import LocusSegmenter
+from serogen.loci.predictor import LocusPredictor
+from serogen.loci.segmenter import LocusSegmenter
 
 __all__ = [
-    "BENIGN_VARIANT_MASK",
     "ArchetypeCategory",
     "ArchetypeClassifier",
     "ArchetypeSpec",
     "ArchetypeTensors",
-    "GeneCluster",
-    "GeneClusters",
+    "BENIGN_VARIANT_MASK",
     "GeneNode",
     "IntergenicEdge",
     "IntergenicOrientation",
@@ -49,17 +46,15 @@ __all__ = [
     "Locus",
     "LocusArchetype",
     "LocusArchetypes",
-    "LocusDatabase",
-    "LocusFinder",
+    "LocusMatch",
     "LocusMatcher",
+    "LocusMatches",
     "LocusNodeCostStrategy",
     "LocusPredictor",
     "LocusSegmenter",
     "Match",
     "MatchType",
     "Matches",
-    "SerotypeDatabase",
-    "SerotypeRecord",
     "get_archetype_tensors",
     "mask_to_roles",
     "roles_to_mask",

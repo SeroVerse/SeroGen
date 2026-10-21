@@ -162,3 +162,39 @@ def test_viral_genetic_codes_and_phage_orf_prediction(
     assert np.all(genes_phage.seqs.lengths % 3 == 0)
     assert np.all(genes_phage.seqs.lengths >= 90)
     assert len(genes_phage.translations) == len(genes_phage)
+
+
+def test_orf_predictor_frameshift_and_stop_readthrough(
+    sgh10_assembly: GenomeAssembly,
+) -> None:
+    """`OrfPredictor` must stitch 1-bp indels and premature stop codons in both whole-genome and fragment modes."""
+    sub_seq = bytes(sgh10_assembly[0].seq[:25_000])
+    pred_wg = OrfPredictor(whole_genome=True)
+    intact_genes = pred_wg.predict(sub_seq)
+
+    fwd_long = np.nonzero((intact_genes.intervals.strands == 1) & (intact_genes.intervals.lengths >= 1200))[0]
+    assert len(fwd_long) > 0
+    g_idx = int(fwd_long[0])
+    g_start = int(intact_genes.intervals.starts[g_idx])
+    g_end = int(intact_genes.intervals.ends[g_idx])
+    intact_aa_len = int(intact_genes.translations.lengths[g_idx])
+    mid = (g_start + g_end) // 2
+    mid -= (mid - g_start) % 3
+
+    del_seq = sub_seq[:mid] + sub_seq[mid + 1 :]
+    ins_seq = sub_seq[:mid] + b"A" + sub_seq[mid:]
+    stop_seq = sub_seq[:mid] + b"TAA" + sub_seq[mid + 3 :]
+
+    for wg_mode in (True, False):
+        pred = OrfPredictor(whole_genome=wg_mode)
+        for mut_seq, expected_len_delta in ((del_seq, -1), (ins_seq, 0), (stop_seq, 0)):
+            mut_genes = pred.predict(mut_seq)
+            matches = np.nonzero(
+                (np.abs(mut_genes.intervals.starts - g_start) <= 30) & (np.abs(mut_genes.intervals.ends - g_end) <= 30)
+            )[0]
+            assert len(matches) == 1
+            m_idx = int(matches[0])
+            assert bool(mut_genes.has_frameshift[m_idx]) is True
+            assert len(mut_genes.indels[m_idx]) >= 1
+            assert abs(int(mut_genes.translations.lengths[m_idx]) - (intact_aa_len + expected_len_delta)) <= 2
+            assert b"*" not in bytes(mut_genes.translations[m_idx].seq)

@@ -41,9 +41,3 @@ Biosynthetic locus archetypes, exact All-Contiguous-Partitions Dynamic Programmi
 ## Reference Serotype Matching (`serogen.loci.matcher`)
 
 ::: serogen.loci.matcher
-
----
-
-## Locus & Serotype Databases (`serogen.loci.database`)
-
-::: serogen.loci.database

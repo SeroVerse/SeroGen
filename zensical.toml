@@ -1,18 +1,24 @@
 [project]
-site_url = "https://SeroVerse.github.io/serogen/"
+site_url = "https://seroverse.github.io/SeroGen/"
 site_name = "SeroGen"
 site_description = "High-performance genomic analysis, de novo polysaccharide locus segmentation, and in silico serotyping"
 site_author = "Tom Stanton"
 copyright = "Copyright &copy; 2026 Tom Stanton — SeroVerse"
 
-repo_url = "https://github.com/SeroVerse/serogen"
-repo_name = "SeroVerse/serogen"
+repo_url = "https://github.com/SeroVerse/SeroGen"
+repo_name = "SeroVerse/SeroGen"
 edit_uri = "edit/main/docs/"
 
 nav = [
   { "Overview" = [
     { "Home" = "index.md" },
     { "Architecture & Algorithms" = "architecture.md" },
+  ] },
+  { "Benchmarks & Notebooks" = [
+    { "Overview" = "notebooks/index.md" },
+    { "Prophage & Bacterial ORFs" = "notebooks/prophage-orfs.md" },
+    { "CNN Gene Role Classifier" = "notebooks/gene-classifier.md" },
+    { "S. pneumoniae CPS Serotyping" = "notebooks/spneumo-serotyping.md" },
   ] },
   { "API Reference" = [
     { "Overview" = "reference/index.md" },
@@ -25,6 +31,7 @@ nav = [
 extra_css = ["stylesheets/extra.css"]
 
 [project.theme]
+custom_dir = "docs/overrides"
 language = "en"
 features = [
   "announce.dismiss",
@@ -107,10 +114,16 @@ full_output = "llms-full.txt"
   { "index.md" = "Getting started, quickstart, and performance benchmarks" },
   { "architecture.md" = "Structure-of-Arrays (SoA) core, single-pass HMM-Viterbi ORF caller, CNN role classifier, and ACP-DP locus segmentation" },
 ]
+"Benchmarks & Notebooks" = [
+  { "notebooks/index.md" = "Interactive Marimo benchmark notebooks and 16:9 slide decks" },
+  { "notebooks/prophage-orfs.md" = "Prophage and bacterial ORF prediction benchmark across 10 phages and E. coli K-12" },
+  { "notebooks/gene-classifier.md" = "Multi-scale 1D CNN + BiGRU functional gene role classifier benchmark" },
+  { "notebooks/spneumo-serotyping.md" = "S. pneumoniae 98-serotype CPS locus matching and synteny layout benchmark" },
+]
 "API Reference" = [
   { "reference/core.md" = "serogen.core: SoA containers, sequences, alphabets, randstrobe indices, SW-Gotoh alignment, clustering, and graphs" },
   { "reference/genes.md" = "serogen.genes: OrfPredictor, GeneRoleClassifier, GeneRoles, and Genes containers" },
-  { "reference/loci.md" = "serogen.loci: LocusSegmenter, LocusMatcher, LocusDatabase, and Locus/Loci models" },
+  { "reference/loci.md" = "serogen.loci: LocusSegmenter, LocusMatcher, LocusPredictor, and Locus/Loci models" },
 ]
 
 [project.plugins.mkdocstrings]

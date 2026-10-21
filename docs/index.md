@@ -28,13 +28,13 @@ Built on zero-copy Structure-of-Arrays (SoA) containers and parallel Numba JIT k
 
     ---
 
-    Decodes bacterial chromosomes (`~70 ms` for a 4.66 Mb *E. coli* genome; **>65 Mb/s**) using a profile-HMM Viterbi decoder with frameshift tolerance, Shine-Dalgarno RBS scoring, and single-pass viral/prophage gap rescue ([`OrfPredictor`][serogen.genes.predictor.OrfPredictor]).
+    Decodes bacterial chromosomes (`~70 ms` for a 4.66 Mb *E. coli* genome; **>65 Mb/s**) using a profile-HMM Viterbi decoder with frameshift tolerance, Shine-Dalgarno RBS scoring, and single-pass viral/prophage gap rescue ([`OrfPredictor`][serogen.genes.orf.predictor.OrfPredictor]).
 
 -   :lucide-cpu: **Multi-Channel 1D CNN Role Classification**
 
     ---
 
-    Classifies translated protein sequences across **36 biosynthetic, regulatory, transport, and mobile genetic element (MGE) roles** via a multi-scale 1D convolutional neural network compiled to pure NumPy/Numba ([`GeneRoleClassifier`][serogen.genes.classifier.GeneRoleClassifier]).
+    Classifies translated protein sequences across **30 biosynthetic, regulatory, transport, and mobile genetic element (MGE) roles** via a multi-scale 1D convolutional neural network compiled to pure NumPy/Numba ([`GeneRoleClassifier`][serogen.genes.cnn.GeneRoleClassifier]).
 
 -   :lucide-waypoints: **Exact ACP-DP Locus Segmentation**
 
@@ -129,5 +129,5 @@ flowchart LR
 | :--- | :--- | :--- |
 | **2-Bit DNA Encoding** | [`Alphabet.DNA.encode`][serogen.core.seq.alphabet.Alphabet.encode] | **`0.38 ms`** (`12.2 GB/s` via Numba LUT) |
 | **Ragged Protein Translation** | [`GeneticCode.translate_ragged`][serogen.core.seq.alphabet.GeneticCode.translate_ragged] | **`0.61 ms`** (`4,968` CDSs) |
-| **Bacterial ORF Prediction** | [`OrfPredictor(include_phage=False)`][serogen.genes.predictor.OrfPredictor] | **`59.6 ms`** (`78.1 Mb/s`) |
-| **Single-Pass Bacterial + Phage ORFs** | [`OrfPredictor(include_phage=True)`][serogen.genes.predictor.OrfPredictor] | **`70.9 ms`** (`65.7 Mb/s`) |
+| **Bacterial ORF Prediction** | [`OrfPredictor(include_phage=False)`][serogen.genes.orf.predictor.OrfPredictor] | **`59.6 ms`** (`78.1 Mb/s`) |
+| **Single-Pass Bacterial + Phage ORFs** | [`OrfPredictor(include_phage=True)`][serogen.genes.orf.predictor.OrfPredictor] | **`70.9 ms`** (`65.7 Mb/s`) |

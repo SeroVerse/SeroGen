@@ -1,6 +1,7 @@
 """Unit tests for `LayoutEngine` and Fruchterman-Reingold force-directed layout in `serogen.core.graph.layout`."""
 
 from dataclasses import dataclass
+from typing import Any, Self, overload
 
 import numpy as np
 import pytest
@@ -39,6 +40,24 @@ class _MockGraphBatch(GraphBatch[_MockGraph, "_MockGraphBatch"]):
             for k in range(e_s, e_e)
         )
         return _MockGraph(nodes=nodes, edges=edges)
+
+    @overload
+    def __getitem__(self, item: int | np.integer[Any]) -> _MockGraph: ...
+
+    @overload
+    def __getitem__(self, item: slice | np.ndarray[tuple[int], Any] | list[Any]) -> Self: ...
+
+    @overload
+    def __getitem__(
+        self, item: int | np.integer[Any] | slice | np.ndarray[tuple[int], Any] | list[Any]
+    ) -> _MockGraph | Self: ...
+
+    def __getitem__(
+        self, item: int | np.integer[Any] | slice | np.ndarray[tuple[int], Any] | list[Any]
+    ) -> _MockGraph | Self:
+        if isinstance(item, int | np.integer):
+            return self._get_single_item(int(item))
+        return type(self)(*self._slice_soa_arrays(np.arange(len(self))[item]))
 
 
 def test_layout_engine_graph_model_and_init_modes() -> None:
@@ -125,8 +144,9 @@ def test_layout_engine_edge_cases_and_validation() -> None:
     rescaled = rescale_layout(np.array([[-2.0, 0.0], [2.0, 0.0]]), scale=5.0, center=np.array([1.0, -1.0]))
     np.testing.assert_allclose(rescaled, np.array([[-4.0, -1.0], [6.0, -1.0]]))
 
+    invalid_mode: Any = "invalid"
     with pytest.raises(ValueError, match="Invalid mode"):
-        LayoutEngine(mode="invalid")  # type: ignore[arg-type]
+        LayoutEngine(mode=invalid_mode)
 
     with pytest.raises(ValueError, match="fixed nodes require initial coordinates"):
         engine_3d.layout(np.zeros((2, 2)), fixed=[0])

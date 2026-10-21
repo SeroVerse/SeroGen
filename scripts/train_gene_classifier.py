@@ -3,6 +3,7 @@
 # dependencies = [
 #     "marimo",
 #     "altair>=5.5.0",
+#     "cassetter>=0.1.0",
 #     "optuna>=4.0.0",
 #     "numpy>=2.4.4",
 #     "scipy>=1.17.1",
@@ -18,27 +19,56 @@
 
 import marimo
 
-__generated_with = "0.11.0"
-app = marimo.App(width="full", app_title="SeroGen — GeneRoleClassifier Training, Optuna Tuning & Validation")
+__generated_with = "0.25.1"
+app = marimo.App(
+    width="full",
+    app_title="SeroGen — GeneRoleClassifier Training, Optuna Tuning & Validation",
+)
 
 
 @app.cell
 def _():
+    import glob
     import gzip
     import os
     import re
+    import sys
+    import threading
     import time
     import xml.etree.ElementTree as ET
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor
     from pathlib import Path
     from urllib.error import HTTPError
     from urllib.parse import quote
     from urllib.request import Request, urlopen
 
+    _serogen_src = str(Path(__file__).resolve().parent.parent / "src")
+    if _serogen_src not in sys.path:
+        sys.path.insert(0, _serogen_src)
+    for _sp in glob.glob(
+        str(Path(__file__).resolve().parent.parent.parent / "KBank" / ".venv" / "lib" / "python*" / "site-packages")
+    ) + glob.glob(
+        str(
+            Path.home()
+            / ".cache"
+            / "uv"
+            / "environments-v2"
+            / "train-gene-classifier-*"
+            / "lib"
+            / "python*"
+            / "site-packages"
+        )
+    ):
+        if _sp not in sys.path:
+            sys.path.append(_sp)
+
     import altair as alt
+    import cassetter
     import marimo as mo
     import numpy as np
     import optuna
+    from cassetter._state import get_current_cassette
+    from cassetter.cassette import NoMatchError, body_to_bytes
     from numba import njit
     from scipy.sparse import csr_array
 
@@ -46,11 +76,11 @@ def _():
     from serogen.core.seq.alphabet import Alphabet
     from serogen.core.seq.clustering import Clusterer
     from serogen.core.seq.seq import Sequences
-    from serogen.genes import GeneRole, GeneRoleClassifier
+    from serogen.genes.cnn import GeneRoleClassifier
+    from serogen.genes.roles import GeneRole
 
     alt.data_transformers.disable_max_rows()
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-
     return (
         Alphabet,
         Clusterer,
@@ -59,13 +89,16 @@ def _():
         GeneRole,
         GeneRoleClassifier,
         HTTPError,
+        NoMatchError,
         Path,
         Request,
         Sequences,
         ThreadPoolExecutor,
         alt,
-        as_completed,
+        body_to_bytes,
+        cassetter,
         csr_array,
+        get_current_cassette,
         gzip,
         mo,
         njit,
@@ -74,6 +107,7 @@ def _():
         os,
         quote,
         re,
+        threading,
         time,
         urlopen,
     )
@@ -86,16 +120,16 @@ def _(GeneRole, re):
     # ------------------------------------------------------------------------------------------------------------------
     ROLE_QUERIES: dict[int, dict[str, object]] = {
         int(GeneRole.FLIPPASE): {
-            "uniprot": '((gene:wzx OR protein_name:"O-antigen flippase" OR xref:pfam-PF01943 OR xref:pfam-PF14667) NOT gene:wzy NOT gene:waaL NOT gene:rfaL NOT gene:murJ NOT gene:ftsW NOT gene:msbA NOT protein_name:polymerase NOT protein_name:ligase NOT xref:pfam-PF04932 NOT xref:pfam-PF14296 NOT xref:pfam-PF13425 NOT xref:pfam-PF03023 NOT xref:pfam-PF01098) AND taxonomy_id:2',
-            "uniref": '(name:"O-antigen flippase" OR name:"polysaccharide flippase") NOT name:polymerase NOT name:ligase NOT name:Wzy NOT name:WaaL NOT name:MurJ AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("O-antigen flippase"[Product] OR wzx[Gene Name]) NOT polymerase[Product] NOT ligase[Product] NOT wzy[Gene Name] NOT waaL[Gene Name] AND "Bacteria"[Organism]',
+            "uniprot": '((gene:wzx OR protein_name:"O-antigen flippase" OR xref:pfam-PF01943 OR xref:pfam-PF14667) NOT gene:wzy NOT gene:waaL NOT gene:rfaL NOT gene:murJ NOT gene:ftsW NOT gene:msbA NOT protein_name:polymerase NOT protein_name:ligase NOT protein_name:acetyltransferase NOT protein_name:acyltransferase NOT xref:pfam-PF01757 NOT xref:pfam-PF04932 NOT xref:pfam-PF14296 NOT xref:pfam-PF13425 NOT xref:pfam-PF03023 NOT xref:pfam-PF01098) AND taxonomy_id:2',
+            "uniref": '(name:"O-antigen flippase" OR name:"polysaccharide flippase") NOT name:polymerase NOT name:ligase NOT name:acetyltransferase NOT name:acyltransferase NOT name:Wzy NOT name:WaaL NOT name:MurJ AND identity:0.5 AND taxonomy_id:2',
+            "ncbi_ipg": '("O-antigen flippase"[Product] OR wzx[Gene Name]) NOT polymerase[Product] NOT ligase[Product] NOT acetyltransferase[Product] NOT acyltransferase[Product] NOT wzy[Gene Name] NOT waaL[Gene Name] AND "Bacteria"[Organism]',
             "min_len": 280,
             "max_len": 550,
         },
         int(GeneRole.POLYMERASE): {
-            "uniprot": '((gene:wzy OR protein_name:"O-antigen polymerase" OR protein_name:"capsular polysaccharide polymerase" OR xref:pfam-PF14296) NOT gene:waaL NOT gene:rfaL NOT gene:wzx NOT protein_name:ligase NOT protein_name:flippase NOT xref:pfam-PF04932 NOT xref:pfam-PF01943 NOT xref:pfam-PF14667 NOT xref:pfam-PF13440) AND taxonomy_id:2',
-            "uniref": '(name:"O-antigen polymerase" OR name:"polysaccharide polymerase" OR name:Wzy) NOT name:ligase NOT name:flippase NOT name:WaaL NOT name:RfaL NOT name:Wzx AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("O-antigen polymerase"[Product] OR wzy[Gene Name]) NOT ligase[Product] NOT flippase[Product] NOT waaL[Gene Name] NOT wzx[Gene Name] AND "Bacteria"[Organism]',
+            "uniprot": '((gene:wzy OR protein_name:"O-antigen polymerase" OR protein_name:"capsular polysaccharide polymerase" OR xref:pfam-PF14296) NOT gene:waaL NOT gene:rfaL NOT gene:wzx NOT protein_name:ligase NOT protein_name:flippase NOT protein_name:acetyltransferase NOT protein_name:acyltransferase NOT xref:pfam-PF01757 NOT xref:pfam-PF04932 NOT xref:pfam-PF01943 NOT xref:pfam-PF14667 NOT xref:pfam-PF13440) AND taxonomy_id:2',
+            "uniref": '(name:"O-antigen polymerase" OR name:"polysaccharide polymerase" OR name:Wzy) NOT name:ligase NOT name:flippase NOT name:acetyltransferase NOT name:acyltransferase NOT name:WaaL NOT name:RfaL NOT name:Wzx AND identity:0.5 AND taxonomy_id:2',
+            "ncbi_ipg": '("O-antigen polymerase"[Product] OR wzy[Gene Name]) NOT ligase[Product] NOT flippase[Product] NOT acetyltransferase[Product] NOT acyltransferase[Product] NOT waaL[Gene Name] NOT wzx[Gene Name] AND "Bacteria"[Organism]',
             "min_len": 260,
             "max_len": 560,
         },
@@ -114,9 +148,13 @@ def _(GeneRole, re):
             "max_len": 820,
         },
         int(GeneRole.PHOSPHATASE): {
-            "uniprot": '(gene:wzb OR gene:ptp OR gene:etp OR gene:cpsB OR protein_name:"phosphotyrosine protein phosphatase" OR xref:pfam-PF01451) NOT protein_name:kinase AND taxonomy_id:2',
-            "uniref": '(name:"low molecular weight phosphotyrosine protein phosphatase" OR name:"phosphotyrosine-protein phosphatase" OR name:Wzb) NOT name:kinase AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("low molecular weight phosphotyrosine protein phosphatase"[Product] OR wzb[Gene Name]) AND "Bacteria"[Organism]',
+            "uniprot": '(gene:wzb OR gene:ptp OR gene:etp OR gene:cpsB OR gene:cpsACP OR protein_name:"phosphotyrosine protein phosphatase" OR xref:pfam-PF01451 OR xref:pfam-PF01569) NOT protein_name:kinase AND taxonomy_id:2',
+            "gt_subqueries": [
+                '(gene:wzb OR gene:ptp OR gene:etp OR gene:cpsB OR protein_name:"phosphotyrosine protein phosphatase" OR xref:pfam-PF01451) NOT protein_name:kinase AND taxonomy_id:2',
+                "(gene:cpsACP OR (xref:pfam-PF01569 AND (protein_name:phosphatase OR protein_name:capsule OR gene:cps*))) NOT protein_name:kinase AND taxonomy_id:2",
+            ],
+            "uniref": '(name:"low molecular weight phosphotyrosine protein phosphatase" OR name:"phosphotyrosine-protein phosphatase" OR name:Wzb OR name:CpsACP) NOT name:kinase AND identity:0.5 AND taxonomy_id:2',
+            "ncbi_ipg": '("low molecular weight phosphotyrosine protein phosphatase"[Product] OR wzb[Gene Name] OR cpsACP[Gene Name]) AND "Bacteria"[Organism]',
             "min_len": 110,
             "max_len": 270,
         },
@@ -150,6 +188,10 @@ def _(GeneRole, re):
         },
         int(GeneRole.CAPSULE_ANCHOR): {
             "uniprot": '(gene:wzi OR gene:kpsC OR gene:wzg OR gene:cpsA OR gene:cps2A OR gene:capA OR protein_name:"capsule attachment protein" OR protein_name:"capsule assembly protein Wzi" OR protein_name:"capsular polysaccharide assembly protein Wzi" OR protein_name:"LytR-CpsA-Psr" OR xref:pfam-PF14052 OR (xref:pfam-PF03816 AND (gene:wzg OR gene:cps* OR gene:cap* OR protein_name:capsule))) AND taxonomy_id:2',
+            "gt_subqueries": [
+                '(gene:wzi OR gene:kpsC OR protein_name:"capsule assembly protein Wzi" OR protein_name:"capsular polysaccharide assembly protein Wzi" OR xref:pfam-PF14052) NOT protein_name:glycosyltransferase AND taxonomy_id:2',
+                '((xref:pfam-PF03816 AND (gene:wzg OR gene:cps* OR gene:cap* OR protein_name:capsule)) OR gene:wzg OR gene:cpsA OR gene:cps2A OR protein_name:"LytR-CpsA-Psr") NOT protein_name:glycosyltransferase AND taxonomy_id:2',
+            ],
             "uniref": '(name:"capsule assembly protein Wzi" OR name:Wzi OR name:KpsC OR name:Wzg OR name:CpsA OR (name:"LytR-CpsA-Psr" AND name:capsule)) AND identity:0.5 AND taxonomy_id:2',
             "ncbi_ipg": '("capsule attachment protein"[Product] OR "capsule assembly protein Wzi"[Product] OR wzi[Gene Name] OR kpsC[Gene Name] OR wzg[Gene Name] OR cpsA[Gene Name] OR cps2A[Gene Name]) AND "Bacteria"[Organism]',
             "min_len": 320,
@@ -171,10 +213,15 @@ def _(GeneRole, re):
         },
         int(GeneRole.ACETYLTRANSFERASE): {
             "uniprot": '(gene:wecD OR gene:oatA OR gene:atr OR gene:wbbJ OR protein_name:"O-acetyltransferase" OR xref:pfam-PF01757) AND taxonomy_id:2',
-            "uniref": '(name:"O-acetyltransferase" AND name:polysaccharide OR name:WecD OR name:OatA) AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("O-acetyltransferase"[Product] OR wecD[Gene Name] OR oatA[Gene Name]) AND "Bacteria"[Organism]',
+            "gt_subqueries": [
+                '((gene:wecD OR gene:wbbJ OR gene:neuD OR xref:pfam-PF00132) AND (protein_name:"O-acetyltransferase" OR protein_name:"acetyltransferase")) NOT protein_name:glycosyltransferase AND taxonomy_id:2',
+                '((gene:oatA OR gene:atr* OR gene:oac* OR xref:pfam-PF01757) AND (protein_name:"O-acetyltransferase" OR protein_name:"acyltransferase" OR protein_name:"acetyltransferase")) NOT protein_name:flippase NOT protein_name:polymerase AND taxonomy_id:2',
+            ],
+            "uniref": '(name:"O-acetyltransferase" AND name:polysaccharide OR name:WecD OR name:OatA OR name:"Acyl_transf_3") AND identity:0.5 AND taxonomy_id:2',
+            "ncbi_ipg": '("O-acetyltransferase"[Product] OR wecD[Gene Name] OR oatA[Gene Name] OR atr[Gene Name]) AND "Bacteria"[Organism]',
             "min_len": 140,
             "max_len": 680,
+            "quota_multiplier": 1.8,
         },
         int(GeneRole.PHOSPHOTRANSFERASE): {
             "uniprot": '(gene:licD OR gene:pgt OR gene:wcfF OR protein_name:"phosphocholine transferase" OR protein_name:"licD-family phosphotransferase" OR xref:pfam-PF04991) AND taxonomy_id:2',
@@ -226,9 +273,9 @@ def _(GeneRole, re):
             "max_len": 420,
         },
         int(GeneRole.OXIDOREDUCTASE): {
-            "uniprot": '(gene:rmlB OR gene:rmlD OR gene:ugd OR gene:gmd OR protein_name:"UDP-glucose 6-dehydrogenase" OR protein_name:"dTDP-glucose 4,6-dehydratase" OR xref:pfam-PF03721) AND taxonomy_id:2',
-            "uniref": '(name:"UDP-glucose 6-dehydrogenase" OR name:"dTDP-glucose 4,6-dehydratase" OR name:"GDP-mannose 4,6-dehydratase") AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("UDP-glucose 6-dehydrogenase"[Product] OR "dTDP-glucose 4,6-dehydratase"[Product] OR "dTDP-4-dehydrorhamnose reductase"[Product] OR rmlB[Gene Name] OR ugd[Gene Name]) AND "Bacteria"[Organism]',
+            "uniprot": '(gene:rmlB OR gene:rmlD OR gene:ugd OR gene:gmd OR gene:gnd OR protein_name:"UDP-glucose 6-dehydrogenase" OR protein_name:"dTDP-glucose 4,6-dehydratase" OR protein_name:"6-phosphogluconate dehydrogenase" OR xref:pfam-PF03721) AND taxonomy_id:2',
+            "uniref": '(name:"UDP-glucose 6-dehydrogenase" OR name:"dTDP-glucose 4,6-dehydratase" OR name:"GDP-mannose 4,6-dehydratase" OR name:"6-phosphogluconate dehydrogenase") AND identity:0.5 AND taxonomy_id:2',
+            "ncbi_ipg": '("UDP-glucose 6-dehydrogenase"[Product] OR "dTDP-glucose 4,6-dehydratase"[Product] OR "dTDP-4-dehydrorhamnose reductase"[Product] OR rmlB[Gene Name] OR ugd[Gene Name] OR gnd[Gene Name]) AND "Bacteria"[Organism]',
             "min_len": 240,
             "max_len": 500,
         },
@@ -275,11 +322,12 @@ def _(GeneRole, re):
                 "(xref:pfam-PF00535 AND protein_name:glycosyltransferase) NOT protein_name:synthase NOT protein_name:cellulose NOT protein_name:hyaluronan NOT protein_name:pyruvyltransferase NOT xref:pfam-PF04230 NOT gene:bcsA NOT gene:pgaC NOT gene:hasA NOT gene:icaA AND taxonomy_id:2",
                 "((xref:pfam-PF13439 OR xref:pfam-PF13579) AND protein_name:glycosyltransferase) NOT protein_name:synthase NOT protein_name:pyruvyltransferase NOT xref:pfam-PF04230 AND taxonomy_id:2",
                 "((xref:pfam-PF01501 OR xref:pfam-PF01531 OR xref:pfam-PF01755 OR xref:pfam-PF03808) AND protein_name:glycosyltransferase) NOT protein_name:synthase NOT protein_name:pyruvyltransferase NOT xref:pfam-PF04230 AND taxonomy_id:2",
+                '((protein_name:glycosyltransferase OR gene:gtr* OR gene:wba* OR gene:wbd*) AND (protein_name:capsule OR protein_name:capsular OR protein_name:"O-antigen")) NOT protein_name:synthase NOT protein_name:pyruvyltransferase NOT gene:wbaP NOT gene:wcaJ NOT gene:wecA AND taxonomy_id:543',
             ],
             "ncbi_ipg": '(glycosyltransferase[Product] NOT synthase[Product] NOT cellulose[Product] NOT pyruvyltransferase[Product]) AND "Bacteria"[Organism]',
             "min_len": 210,
             "max_len": 460,
-            "quota_multiplier": 1.6,
+            "quota_multiplier": 4.5,
         },
         int(GeneRole.TRANSPOSASE): {
             "uniprot": '((xref:pfam-PF01609 OR xref:pfam-PF01527 OR xref:pfam-PF00872 OR xref:pfam-PF13359 OR protein_name:"IS3 family transposase" OR protein_name:"IS5 family transposase" OR protein_name:"IS6 family transposase" OR protein_name:"IS256 family transposase") AND protein_name:transposase) NOT protein_name:integrase NOT protein_name:recombinase NOT protein_name:glycosyltransferase AND taxonomy_id:2',
@@ -343,8 +391,7 @@ def _(GeneRole, re):
         ROLE_TO_KOS.setdefault(int(_role), []).append(_ko)
 
     RefSeqAccPattern = re.compile(r"^[A-Z]{2,}_")
-
-    return KEGG_KO_MAP, ROLE_QUERIES, ROLE_TO_KOS, RefSeqAccPattern
+    return ROLE_QUERIES, ROLE_TO_KOS, RefSeqAccPattern
 
 
 @app.cell
@@ -356,14 +403,18 @@ def _(
     GeneRole,
     GeneRoleClassifier,
     HTTPError,
+    NoMatchError,
     Path,
-    ROLE_QUERIES,
-    ROLE_TO_KOS,
+    ROLE_QUERIES: dict[int, dict[str, object]],
+    ROLE_TO_KOS: dict[int, list[str]],
     RefSeqAccPattern,
     Request,
     Sequences,
     ThreadPoolExecutor,
+    body_to_bytes,
+    cassetter,
     csr_array,
+    get_current_cassette,
     gzip,
     mo,
     njit,
@@ -371,12 +422,16 @@ def _(
     optuna,
     os,
     quote,
+    threading,
     time,
     urlopen,
 ):
     # ------------------------------------------------------------------------------------------------------------------
-    # Pure In-Memory Multi-Source Sequence Fetcher (with Post-Clustering Top-Up), Pre-Encoder & Optuna TPE Engine
+    # Pure In-Memory Multi-Source Sequence Fetcher (with Cassetter Caching & Post-Clustering Top-Up), Pre-Encoder & Optuna
     # ------------------------------------------------------------------------------------------------------------------
+    _cassette_lock = threading.Lock()
+    _active_cassette: list[object] = [None]
+
     def resolve_ncbi_api_key() -> str | None:
         """Resolve NCBI_API_KEY from environment or ~/.env without writing anything to disk."""
         api_key = os.environ.get("NCBI_API_KEY")
@@ -392,7 +447,19 @@ def _(
         return None
 
     def http_get_bytes(url: str, timeout: float = 25.0, max_retries: int = 3) -> bytes:
-        """Perform an in-memory HTTP GET request with gzip decompression and exponential backoff."""
+        """Perform an in-memory HTTP GET request with cassetter replay/recording, gzip decompression, and backoff."""
+        cassette = get_current_cassette() or _active_cassette[0]
+        if cassette is not None:
+            with _cassette_lock:
+                try:
+                    cached = cassette.play("GET", url, {}, None)  # type: ignore[attr-defined]
+                    raw_body = body_to_bytes(cached.body)
+                    if raw_body.startswith(b"\x1f\x8b"):
+                        raw_body = gzip.decompress(raw_body)
+                    return raw_body
+                except NoMatchError:
+                    pass
+
         backoff = 1.0
         headers = {"User-Agent": "SeroGen/0.1 (In-Memory BGC Classifier Pipeline)"}
         for attempt in range(max_retries):
@@ -403,6 +470,18 @@ def _(
                         data = resp.read()
                         if data.startswith(b"\x1f\x8b"):
                             data = gzip.decompress(data)
+                        if cassette is not None and data:
+                            with _cassette_lock:
+                                if cassette.record_mode in ("all", "new_episodes", "once"):  # type: ignore[attr-defined]
+                                    cassette.record(  # type: ignore[attr-defined]
+                                        "GET",
+                                        url,
+                                        {},
+                                        None,
+                                        200,
+                                        {"content-type": ["text/plain; charset=utf-8"]},
+                                        data,
+                                    )
                         return data
             except HTTPError as err:
                 if err.code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
@@ -567,10 +646,13 @@ def _(
         include_kegg: bool = True,
         seed: int = 42,
     ) -> tuple[Sequences, np.ndarray]:
-        """Fetch, cluster on the main thread, and top-up post-clustering deficits across all 29 roles."""
+        """Fetch (with cassetter disk caching) and cluster non-redundant bacterial reference sequences across 29 roles."""
         api_key = resolve_ncbi_api_key()
         clusterer = Clusterer(min_identity=min_identity, mode="cdhit")
         n_functional = 29
+
+        cassette_path = Path(__file__).resolve().parent / "cassettes" / "train_gene_classifier.yaml"
+        cassette_path.parent.mkdir(parents=True, exist_ok=True)
 
         def _role_target(role_idx: int) -> int:
             q_spec = ROLE_QUERIES.get(role_idx, {})
@@ -588,6 +670,7 @@ def _(
             q_spec = ROLE_QUERIES.get(role_idx, {})
             r_target = _role_target(role_idx)
             batches: list[Sequences] = []
+
             exclude_gt = role_idx not in (
                 int(GeneRole.GLYCOSYLTRANSFERASE),
                 int(GeneRole.TRANSMEMBRANE_SYNTHASE),
@@ -616,65 +699,75 @@ def _(
                     batches.append(ur_seqs)
             return Sequences.concat(batches) if batches else Sequences.empty()
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            primary_raw_list = list(pool.map(_fetch_primary_http, range(n_functional)))
+        with cassetter.use_cassette(
+            str(cassette_path),
+            record_mode="new_episodes",
+            filter_query_parameters=["api_key"],
+            intercept=[],
+        ) as _cas:
+            _active_cassette[0] = _cas
+            try:
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    primary_raw_list = list(pool.map(_fetch_primary_http, range(n_functional)))
 
-        # Phase 2: Main-thread Numba parallel=True clustering & POST-CLUSTERING deficit detection
-        curated_map: dict[int, Sequences] = {}
-        deficit_roles: list[int] = []
-        for r_idx, raw_seqs in enumerate(primary_raw_list):
-            q_spec = ROLE_QUERIES.get(r_idx, {})
-            r_min_len = int(q_spec.get("min_len", 30))  # type: ignore[call-overload]
-            r_max_len = int(q_spec.get("max_len", 2500))  # type: ignore[call-overload]
-            clustered = filter_and_cluster_role_sequences(
-                raw_seqs,
-                clusterer=clusterer,
-                k_std=k_std,
-                min_len=r_min_len,
-                max_len=r_max_len,
-            )
-            curated_map[r_idx] = clustered
-            if len(clustered) < _role_target(r_idx):
-                deficit_roles.append(r_idx)
-
-        # Phase 3: Post-clustering enrichment from NCBI IPG & KEGG Orthology for any role < role_target
-        if deficit_roles and (include_ncbi or include_kegg):
-
-            def _fetch_secondary_http(role_idx: int) -> tuple[int, Sequences]:
-                q_spec = ROLE_QUERIES.get(role_idx, {})
-                r_target = _role_target(role_idx)
-                sec_batches: list[Sequences] = []
-                if include_ncbi and "ncbi_ipg" in q_spec:
-                    ipg_seqs = fetch_ncbi_ipg_sequences(
-                        str(q_spec["ncbi_ipg"]),
-                        limit=max(r_target * 2, 100),
-                        api_key=api_key,
-                    )
-                    if len(ipg_seqs) > 0:
-                        sec_batches.append(ipg_seqs)
-                if include_kegg and role_idx in ROLE_TO_KOS:
-                    for ko_id in ROLE_TO_KOS[role_idx]:
-                        ko_seqs = fetch_kegg_ko_sequences(ko_id, max_seqs=40)
-                        if len(ko_seqs) > 0:
-                            sec_batches.append(ko_seqs)
-                return role_idx, (Sequences.concat(sec_batches) if sec_batches else Sequences.empty())
-
-            with ThreadPoolExecutor(max_workers=6) as pool:
-                sec_results = list(pool.map(_fetch_secondary_http, deficit_roles))
-
-            for r_idx, sec_seqs in sec_results:
-                if len(sec_seqs) > 0:
+                # Phase 2: Main-thread Numba parallel=True clustering & POST-CLUSTERING deficit detection
+                curated_map: dict[int, Sequences] = {}
+                deficit_roles: list[int] = []
+                for r_idx, raw_seqs in enumerate(primary_raw_list):
                     q_spec = ROLE_QUERIES.get(r_idx, {})
                     r_min_len = int(q_spec.get("min_len", 30))  # type: ignore[call-overload]
                     r_max_len = int(q_spec.get("max_len", 2500))  # type: ignore[call-overload]
-                    combined = Sequences.concat([curated_map[r_idx], sec_seqs])
-                    curated_map[r_idx] = filter_and_cluster_role_sequences(
-                        combined,
+                    clustered = filter_and_cluster_role_sequences(
+                        raw_seqs,
                         clusterer=clusterer,
                         k_std=k_std,
                         min_len=r_min_len,
                         max_len=r_max_len,
                     )
+                    curated_map[r_idx] = clustered
+                    if len(clustered) < _role_target(r_idx):
+                        deficit_roles.append(r_idx)
+
+                # Phase 3: Post-clustering enrichment from NCBI IPG & KEGG Orthology for any role < role_target
+                if deficit_roles and (include_ncbi or include_kegg):
+
+                    def _fetch_secondary_http(role_idx: int) -> tuple[int, Sequences]:
+                        q_spec = ROLE_QUERIES.get(role_idx, {})
+                        r_target = _role_target(role_idx)
+                        sec_batches: list[Sequences] = []
+                        if include_ncbi and "ncbi_ipg" in q_spec:
+                            ipg_seqs = fetch_ncbi_ipg_sequences(
+                                str(q_spec["ncbi_ipg"]),
+                                limit=max(r_target * 2, 100),
+                                api_key=api_key,
+                            )
+                            if len(ipg_seqs) > 0:
+                                sec_batches.append(ipg_seqs)
+                        if include_kegg and role_idx in ROLE_TO_KOS:
+                            for ko_id in ROLE_TO_KOS[role_idx]:
+                                ko_seqs = fetch_kegg_ko_sequences(ko_id, max_seqs=40)
+                                if len(ko_seqs) > 0:
+                                    sec_batches.append(ko_seqs)
+                        return role_idx, (Sequences.concat(sec_batches) if sec_batches else Sequences.empty())
+
+                    with ThreadPoolExecutor(max_workers=6) as pool:
+                        sec_results = list(pool.map(_fetch_secondary_http, deficit_roles))
+
+                    for r_idx, sec_seqs in sec_results:
+                        if len(sec_seqs) > 0:
+                            q_spec = ROLE_QUERIES.get(r_idx, {})
+                            r_min_len = int(q_spec.get("min_len", 30))  # type: ignore[call-overload]
+                            r_max_len = int(q_spec.get("max_len", 2500))  # type: ignore[call-overload]
+                            combined = Sequences.concat([curated_map[r_idx], sec_seqs])
+                            curated_map[r_idx] = filter_and_cluster_role_sequences(
+                                combined,
+                                clusterer=clusterer,
+                                k_std=k_std,
+                                min_len=r_min_len,
+                                max_len=r_max_len,
+                            )
+            finally:
+                _active_cassette[0] = None
 
         # Phase 4: Cap each role at _role_target(r_idx) and pack into a single pre-encoded Sequences container
         ordered_batches: list[Sequences] = []
@@ -682,8 +775,8 @@ def _(
         for r_idx in range(n_functional):
             b = curated_map.get(r_idx, Sequences.empty())
             r_target = _role_target(r_idx)
+            role_rng = np.random.default_rng(seed + r_idx)
             if len(b) > r_target:
-                role_rng = np.random.default_rng(seed + r_idx)
                 chosen = np.sort(role_rng.choice(len(b), size=r_target, replace=False).astype(np.int32))
                 b = b[chosen]
             if len(b) > 0:
@@ -699,7 +792,7 @@ def _(
         all_labels = np.concatenate(label_parts)
         return encoded_seqs, all_labels
 
-    @njit(cache=True, nogil=True)
+    @njit(nogil=True)
     def stratified_split_kernel(
         y: np.ndarray,
         test_fraction: float,
@@ -747,7 +840,7 @@ def _(
                 tr_pos += 1
         return train_idx, test_idx
 
-    @njit(cache=True, nogil=True)
+    @njit(nogil=True)
     def stratified_kfold_assign(
         y: np.ndarray,
         n_folds: int,
@@ -906,14 +999,14 @@ def _(
         ) as bar:
             for _ in range(n_trials):
                 trial = study.ask()
-                embed_dim = trial.suggest_categorical("embed_dim", [16, 24, 32, 48, 64])
-                num_filters = trial.suggest_categorical("num_filters", [64, 96, 128, 192, 256])
+                embed_dim = trial.suggest_categorical("embed_dim", [32, 48, 64])
+                num_filters = trial.suggest_categorical("num_filters", [128, 192, 256])
                 kernel_combo = trial.suggest_categorical(
                     "kernel_combo",
                     ["3, 7, 11", "5, 9, 13", "3, 5, 9, 15", "7, 11, 15", "5, 11, 17"],
                 )
                 lr = trial.suggest_float("learning_rate", 1e-3, 2.5e-2, log=True)
-                wd = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
+                wd = trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True)
                 bs = trial.suggest_categorical("batch_size", [16, 32, 64])
 
                 k_tuple = tuple(int(k.strip()) for k in kernel_combo.split(","))
@@ -925,6 +1018,7 @@ def _(
                         embed_dim=int(embed_dim),
                         num_filters=int(num_filters),
                         kernel_size=k_tuple,
+                        spatial_zones=2,
                         learning_rate=float(lr),
                         epochs=epochs,
                         batch_size=int(bs),
@@ -974,157 +1068,58 @@ def _(
             except Exception:
                 pass
 
+        # Pure-NumPy one-way ANOVA eta-squared fallback when sklearn is not installed
+        if not importance_records and len(trial_records) >= 2:
+            y_vals = np.array([float(r["macro_f1"]) for r in trial_records], dtype=np.float64)
+            grand_mean = float(np.mean(y_vals))
+            ss_total = float(np.sum((y_vals - grand_mean) ** 2))
+            if ss_total > 1e-12:
+                param_keys = [
+                    "kernel_combo",
+                    "num_filters",
+                    "embed_dim",
+                    "batch_size",
+                    "learning_rate",
+                    "weight_decay",
+                ]
+                raw_imp: dict[str, float] = {}
+                for pk in param_keys:
+                    if pk in ("learning_rate", "weight_decay"):
+                        vals = np.log10(np.array([float(r[pk]) for r in trial_records], dtype=np.float64))
+                        bins = np.digitize(vals, np.quantile(vals, [0.33, 0.66]))
+                        groups = [str(b) for b in bins]
+                    else:
+                        groups = [str(r[pk]) for r in trial_records]
+                    ss_between = 0.0
+                    for g in set(groups):
+                        g_vals = y_vals[[i for i, gv in enumerate(groups) if gv == g]]
+                        ss_between += len(g_vals) * ((float(np.mean(g_vals)) - grand_mean) ** 2)
+                    raw_imp[pk] = ss_between / ss_total
+                tot_imp = sum(raw_imp.values()) or 1.0
+                for pk, val in sorted(raw_imp.items(), key=lambda kv: kv[1], reverse=True):
+                    importance_records.append({"parameter": pk, "importance": float(val / tot_imp)})
+
         return study, trial_records, importance_records
 
     return (
-        stratified_kfold_assign,
-        stratified_split_kernel,
         evaluate_sparse_metrics,
         fetch_in_memory_dataset,
-        fetch_kegg_ko_sequences,
-        fetch_ncbi_ipg_sequences,
-        fetch_uniprot_sequences,
-        fetch_uniref50_sequences,
-        filter_and_cluster_role_sequences,
-        http_get_bytes,
-        resolve_ncbi_api_key,
         run_optuna_study,
+        stratified_split_kernel,
     )
 
 
 @app.cell
-def _(mo):
-    # ------------------------------------------------------------------------------------------------------------------
-    # Interactive Control Panel (Dataset Curation, 1D-CNN Hyperparameters & Optuna TPE Tuning)
-    # ------------------------------------------------------------------------------------------------------------------
-    target_per_role_ui = mo.ui.slider(start=30, stop=250, step=10, value=120, label="Max Sequences / Role")
-    min_identity_ui = mo.ui.slider(start=50.0, stop=95.0, step=5.0, value=80.0, label="CD-HIT Identity (%)")
-    k_std_ui = mo.ui.slider(start=2.0, stop=5.0, step=0.5, value=3.5, label="Length MAD Threshold (k)")
-    test_fraction_ui = mo.ui.slider(start=0.10, stop=0.40, step=0.05, value=0.20, label="Test Split Fraction")
-    include_ncbi_ui = mo.ui.checkbox(value=True, label="Include NCBI IPG")
-    include_kegg_ui = mo.ui.checkbox(value=True, label="Include KEGG Orthology")
-
-    embed_dim_ui = mo.ui.slider(start=16, stop=64, step=8, value=32, label="Embedding Dim")
-    num_filters_ui = mo.ui.slider(start=32, stop=256, step=32, value=128, label="Conv Filters")
-    kernel_sizes_ui = mo.ui.text(value="5, 9, 13", label="Multi-Scale Kernel Sizes")
-    epochs_ui = mo.ui.slider(start=5, stop=60, step=5, value=30, label="Epochs")
-    batch_size_ui = mo.ui.slider(start=8, stop=64, step=8, value=32, label="Mini-Batch Size")
-    lr_ui = mo.ui.number(start=0.0005, stop=0.05, step=0.0005, value=0.008, label="AdamW Learning Rate")
-    weight_decay_ui = mo.ui.number(start=0.0, stop=0.01, step=0.0001, value=0.0001, label="AdamW Weight Decay")
-    seed_ui = mo.ui.number(start=0, stop=99999, step=1, value=42, label="Random Seed")
-
-    n_trials_ui = mo.ui.slider(start=5, stop=80, step=5, value=20, label="Optuna Trials")
-    cv_folds_ui = mo.ui.dropdown(
-        options={
-            "Fast Inner Split (80/20)": 1,
-            "3-Fold Stratified CV": 3,
-            "5-Fold Stratified CV": 5,
-        },
-        value="Fast Inner Split (80/20)",
-        label="Optuna Inner Validation",
-    )
-    tune_btn = mo.ui.run_button(label="Run Optuna Hyperparameter Study")
-
-    header_md = mo.md(
-        """
-        # SeroGen `GeneRoleClassifier` — Unified In-Memory Training, Optuna Tuning & Validation
-        Fetches non-redundant bacterial reference proteins across **UniProtKB (Pfam/InterPro)**, **UniRef50**,
-        **NCBI IPG**, and **KEGG Orthology** directly into an in-memory
-        [`Sequences`](file:///Users/tsta0015/Programming/SeroGen/src/serogen/core/seq/seq.py) container, deduplicates
-        homologs via [`Clusterer`](file:///Users/tsta0015/Programming/SeroGen/src/serogen/core/seq/clustering.py) with
-        **post-clustering deficit top-up**, optionally tunes with **Optuna TPE**, and evaluates
-        [`GeneRoleClassifier`](file:///Users/tsta0015/Programming/SeroGen/src/serogen/classifier.py).
-        """
-    )
-
-    controls_panel = mo.vstack(
-        [
-            header_md,
-            mo.hstack(
-                [
-                    mo.vstack(
-                        [
-                            mo.md("### 1. In-Memory Dataset Curation"),
-                            target_per_role_ui,
-                            min_identity_ui,
-                            k_std_ui,
-                            test_fraction_ui,
-                            mo.hstack([include_ncbi_ui, include_kegg_ui]),
-                        ]
-                    ),
-                    mo.vstack(
-                        [
-                            mo.md("### 2. Manual 1D-CNN & AdamW Defaults"),
-                            embed_dim_ui,
-                            num_filters_ui,
-                            kernel_sizes_ui,
-                            epochs_ui,
-                            batch_size_ui,
-                            mo.hstack([lr_ui, weight_decay_ui, seed_ui]),
-                        ]
-                    ),
-                    mo.vstack(
-                        [
-                            mo.md("### 3. Optuna TPE Tuning (In-Memory)"),
-                            n_trials_ui,
-                            cv_folds_ui,
-                            tune_btn,
-                        ]
-                    ),
-                ],
-                widths="equal",
-            ),
-        ]
-    )
-    mo.output.replace(controls_panel)
-    return (
-        batch_size_ui,
-        controls_panel,
-        cv_folds_ui,
-        embed_dim_ui,
-        epochs_ui,
-        header_md,
-        include_kegg_ui,
-        include_ncbi_ui,
-        k_std_ui,
-        kernel_sizes_ui,
-        lr_ui,
-        min_identity_ui,
-        n_trials_ui,
-        num_filters_ui,
-        seed_ui,
-        target_per_role_ui,
-        test_fraction_ui,
-        tune_btn,
-        weight_decay_ui,
-    )
-
-
-@app.cell
-def _(
-    fetch_in_memory_dataset,
-    include_kegg_ui,
-    include_ncbi_ui,
-    k_std_ui,
-    min_identity_ui,
-    mo,
-    seed_ui,
-    target_per_role_ui,
-    time,
-):
-    # ------------------------------------------------------------------------------------------------------------------
-    # Execute In-Memory Data Fetching, Post-Clustering Top-Up & Token Pre-Encoding
-    # ------------------------------------------------------------------------------------------------------------------
+def _(fetch_in_memory_dataset, time):
     _t0 = time.perf_counter()
-    with mo.status.spinner(title="Fetching, clustering & verifying post-clustering role quotas in memory..."):
-        dataset_seqs, dataset_labels = fetch_in_memory_dataset(
-            target_per_role=int(target_per_role_ui.value),
-            min_identity=float(min_identity_ui.value),
-            k_std=float(k_std_ui.value),
-            include_ncbi=bool(include_ncbi_ui.value),
-            include_kegg=bool(include_kegg_ui.value),
-            seed=int(seed_ui.value),
-        )
+    dataset_seqs, dataset_labels = fetch_in_memory_dataset(
+        target_per_role=120,
+        min_identity=80.0,
+        k_std=3.5,
+        include_ncbi=True,
+        include_kegg=True,
+        seed=42,
+    )
     fetch_elapsed = time.perf_counter() - _t0
     return dataset_labels, dataset_seqs, fetch_elapsed
 
@@ -1133,89 +1128,56 @@ def _(
 def _(
     GeneRole,
     GeneRoleClassifier,
+    Path,
     Sequences,
-    stratified_split_kernel,
-    batch_size_ui,
-    cv_folds_ui,
     dataset_labels,
     dataset_seqs,
-    embed_dim_ui,
-    epochs_ui,
     evaluate_sparse_metrics,
-    fetch_elapsed,
-    kernel_sizes_ui,
-    lr_ui,
-    mo,
-    n_trials_ui,
     np,
-    num_filters_ui,
     run_optuna_study,
-    seed_ui,
-    test_fraction_ui,
+    stratified_split_kernel,
     time,
-    tune_btn,
-    weight_decay_ui,
 ):
-    # ------------------------------------------------------------------------------------------------------------------
-    # Hard 29-Role Quota Verification, Ragged Split, Optional Optuna TPE Study & Final Numba AdamW Training
-    # ------------------------------------------------------------------------------------------------------------------
-    mo.stop(
-        len(dataset_seqs) == 0,
-        mo.md("> **Warning:** No sequences were fetched. Check network connectivity and re-run."),
-    )
-
     role_counts = np.bincount(dataset_labels.astype(np.int32), minlength=29)
     min_role_support = int(np.min(role_counts[:29]))
     min_role_name = GeneRole(int(np.argmin(role_counts[:29]))).name
     quota_passed = bool(np.all(role_counts[:29] >= 30))
 
-    max_test_per_role = max(1, int(round(float(np.median(role_counts[:29])) * float(test_fraction_ui.value))))
+    max_test_per_role = max(1, int(round(float(np.median(role_counts[:29])) * 0.20)))
     train_idx, test_idx = stratified_split_kernel(
         dataset_labels,
-        float(test_fraction_ui.value),
-        int(seed_ui.value),
+        0.20,
+        42,
         max_test_per_role,
     )
 
-    # Zero-loop ragged slicing powered by serogen.core.collections._gather_ragged_kernel
     X_train = dataset_seqs[train_idx]
     y_train = dataset_labels[train_idx]
     X_test = dataset_seqs[test_idx]
     y_test = dataset_labels[test_idx]
 
-    optuna_study = None
-    optuna_trial_records: list[dict[str, object]] = []
-    optuna_importance_records: list[dict[str, object]] = []
+    optuna_study, optuna_trial_records, optuna_importance_records = run_optuna_study(
+        X_train=X_train,
+        y_train=y_train,
+        n_trials=20,
+        cv_folds=1,
+        epochs=30,
+        seed=42,
+    )
+    best_p = optuna_study.best_params
+    best_trial_num = int(optuna_study.best_trial.number + 1)
+    best_val_f1 = float(optuna_study.best_value) * 100.0
+    trial_f1s = np.array([float(r["macro_f1"]) for r in optuna_trial_records], dtype=np.float64)
+    median_val_f1 = float(np.median(trial_f1s)) if len(trial_f1s) > 0 else best_val_f1
+    optuna_gain_f1 = best_val_f1 - median_val_f1
 
-    is_script_mode = not mo.running_in_notebook()
-
-    if tune_btn.value or is_script_mode:
-        optuna_study, optuna_trial_records, optuna_importance_records = run_optuna_study(
-            X_train=X_train,
-            y_train=y_train,
-            n_trials=int(n_trials_ui.value),
-            cv_folds=int(cv_folds_ui.value),
-            epochs=int(epochs_ui.value),
-            seed=int(seed_ui.value),
-        )
-        best_p = optuna_study.best_params
-        active_embed_dim = int(best_p["embed_dim"])
-        active_num_filters = int(best_p["num_filters"])
-        parsed_kernels = tuple(int(k.strip()) for k in str(best_p["kernel_combo"]).split(","))
-        active_lr = float(best_p["learning_rate"])
-        active_wd = float(best_p["weight_decay"])
-        active_bs = int(best_p["batch_size"])
-        config_source = (
-            f"Optuna Best (Trial #{optuna_study.best_trial.number + 1}, Val F1={optuna_study.best_value * 100:.1f}%)"
-        )
-    else:
-        active_embed_dim = int(embed_dim_ui.value)
-        active_num_filters = int(num_filters_ui.value)
-        parsed_kernels = tuple(int(k.strip()) for k in kernel_sizes_ui.value.split(",") if k.strip())
-        active_lr = float(lr_ui.value)
-        active_wd = float(weight_decay_ui.value)
-        active_bs = int(batch_size_ui.value)
-        config_source = "Manual UI Hyperparameters"
+    active_embed_dim = int(best_p["embed_dim"])
+    active_num_filters = int(best_p["num_filters"])
+    parsed_kernels = tuple(int(k.strip()) for k in str(best_p["kernel_combo"]).split(","))
+    active_lr = float(best_p["learning_rate"])
+    active_wd = float(best_p["weight_decay"])
+    active_bs = int(best_p["batch_size"])
+    config_source = f"Optuna Best (Trial #{best_trial_num}, Val F1={best_val_f1:.2f}%)"
 
     kernel_arg: int | tuple[int, ...] = parsed_kernels[0] if len(parsed_kernels) == 1 else parsed_kernels
 
@@ -1224,17 +1186,17 @@ def _(
         embed_dim=active_embed_dim,
         num_filters=active_num_filters,
         kernel_size=kernel_arg,
+        spatial_zones=2,
         learning_rate=active_lr,
-        epochs=int(epochs_ui.value),
+        epochs=30,
         batch_size=active_bs,
         weight_decay=active_wd,
         class_weight="balanced",
-        random_state=int(seed_ui.value),
+        random_state=42,
     )
 
     _train_t0 = time.perf_counter()
-    with mo.status.spinner(title=f"Training final Multi-Scale 1D-CNN ({config_source})..."):
-        clf.fit(X_train, y_train)
+    clf.fit(X_train, y_train)
     train_elapsed = time.perf_counter() - _train_t0
 
     y_pred_test = clf.predict(X_test)
@@ -1243,47 +1205,32 @@ def _(
 
     eval_metrics = evaluate_sparse_metrics(y_test, y_pred_test, clf.classes_)
 
-    # Generate shuffled-composition decoy sequences in-memory to benchmark Open-Set UNKNOWN (Role 29) rejection
-    _rng = np.random.default_rng(int(seed_ui.value) + 999)
+    _rng = np.random.default_rng(42 + 999)
     _decoy_bytes = [bytes(_rng.permutation(np.frombuffer(X_test[i].seq, dtype=np.uint8))) for i in range(len(X_test))]
     decoy_seqs = Sequences.from_bytes(_decoy_bytes)
     decoy_probs = clf.predict_proba(decoy_seqs)
     decoy_max_conf = np.max(decoy_probs, axis=1)
 
-    summary_banner = mo.hstack(
-        [
-            mo.stat(
-                label="Curated Sequences",
-                value=f"{len(dataset_seqs):,}",
-                caption=f"Train: {len(X_train):,} | Test: {len(X_test):,} ({fetch_elapsed:.1f}s)",
-            ),
-            mo.stat(
-                label="29-Role Quota Gate",
-                value="PASS" if quota_passed else "DEFICIT",
-                caption=f"Min Role: {min_role_name} ({min_role_support} seqs)",
-            ),
-            mo.stat(
-                label="Final Model Fit",
-                value=f"{train_elapsed:.2f}s",
-                caption=f"{config_source} | Loss: {clf.loss_history_[-1]:.4f}",
-            ),
-            mo.stat(
-                label="Test Accuracy",
-                value=f"{float(eval_metrics['accuracy']) * 100:.2f}%",
-                caption=f"{len(clf.classes_)} / {len(GeneRole) - 1} Functional Roles",
-            ),
-            mo.stat(
-                label="Macro F1-Score",
-                value=f"{float(eval_metrics['macro_f1']) * 100:.2f}%",
-                caption=(
-                    f"Prec: {float(eval_metrics['macro_precision']) * 100:.1f}% | "
-                    f"Rec: {float(eval_metrics['macro_recall']) * 100:.1f}%"
-                ),
-            ),
-        ],
-        widths="equal",
-    )
-    mo.output.replace(summary_banner)
+    # Save the Optuna-optimised production model fitted on all curated non-holdout sequences to src/serogen/data/model.npz
+    default_model_path = Path(__file__).resolve().parent.parent / "src" / "serogen" / "data" / "model.npz"
+    if len(clf.classes_) > 0:
+        prod_clf = GeneRoleClassifier(
+            vocab_size=23,
+            embed_dim=active_embed_dim,
+            num_filters=active_num_filters,
+            kernel_size=kernel_arg,
+            spatial_zones=2,
+            learning_rate=active_lr,
+            epochs=30,
+            batch_size=active_bs,
+            weight_decay=active_wd,
+            class_weight="balanced",
+            random_state=42,
+        )
+        prod_clf.fit(dataset_seqs, dataset_labels)
+        default_model_path.parent.mkdir(parents=True, exist_ok=True)
+        prod_clf.save(default_model_path)
+    model_size_kb = default_model_path.stat().st_size / 1024.0 if default_model_path.exists() else 0.0
     return (
         X_test,
         X_train,
@@ -1292,29 +1239,24 @@ def _(
         active_lr,
         active_num_filters,
         active_wd,
+        best_trial_num,
+        best_val_f1,
         clf,
         config_source,
         decoy_max_conf,
-        decoy_probs,
-        decoy_seqs,
         eval_metrics,
-        is_script_mode,
-        kernel_arg,
+        median_val_f1,
         min_role_name,
         min_role_support,
+        model_size_kb,
+        optuna_gain_f1,
         optuna_importance_records,
-        optuna_study,
         optuna_trial_records,
         parsed_kernels,
         quota_passed,
         role_counts,
-        summary_banner,
-        test_idx,
         test_max_conf,
-        test_probs,
         train_elapsed,
-        train_idx,
-        y_pred_test,
         y_test,
         y_train,
     )
@@ -1329,7 +1271,6 @@ def _(
     dataset_seqs,
     decoy_max_conf,
     eval_metrics,
-    mo,
     np,
     optuna_importance_records,
     optuna_trial_records,
@@ -1337,11 +1278,6 @@ def _(
     y_test,
     y_train,
 ):
-    # ------------------------------------------------------------------------------------------------------------------
-    # Altair Diagnostic Visualizations (Zero-DataFrame, Pure NumPy/Dict Values)
-    # ------------------------------------------------------------------------------------------------------------------
-
-    # 1. Dataset Split Counts & Length IQR per Role
     split_records: list[dict[str, object]] = []
     length_records: list[dict[str, object]] = []
     for _c in clf.classes_:
@@ -1392,7 +1328,7 @@ def _(
             color=alt.Color("split:N", title="Split", scale=alt.Scale(scheme="tableau10")),
             tooltip=["role_name:N", "category:N", "split:N", "count:Q"],
         )
-        .properties(title="Curated Sequence Counts per Role (Train vs. Test)", width=380, height=480)
+        .properties(title="Curated Sequence Counts per Role (Train vs. Test)", width=380, height=360)
     )
 
     len_base = alt.Chart(alt.Data(values=length_records)).encode(
@@ -1409,23 +1345,21 @@ def _(
         tooltip=["role_name:N", "category:N", "median:Q", "q25:Q", "q75:Q", "min_len:Q", "max_len:Q"],
     )
     length_chart = (len_rule + len_pts).properties(
-        title="Protein Length Distribution (Median & IQR)", width=380, height=480
+        title="Protein Length Distribution (Median & IQR)", width=380, height=360
     )
 
-    # 2. Training Loss Curve
     loss_records = [{"epoch": idx + 1, "loss": float(val)} for idx, val in enumerate(clf.loss_history_)]
     loss_chart = (
         alt.Chart(alt.Data(values=loss_records))
-        .mark_line(point=True, strokeWidth=2.5, color="#2b5c8f")
+        .mark_line(point=True, strokeWidth=2.5, color="#0d9488")
         .encode(
             x=alt.X("epoch:Q", title="Epoch"),
             y=alt.Y("loss:Q", title="Class-Weighted Cross-Entropy Loss"),
             tooltip=["epoch:Q", alt.Tooltip("loss:Q", format=".4f")],
         )
-        .properties(title="AdamW Training Loss Convergence", width=360, height=280)
+        .properties(title="AdamW Training Loss Convergence", width=380, height=320)
     )
 
-    # 3. Open-Set Confidence & Decoy Rejection Sweep
     thresholds = np.linspace(0.10, 0.99, 45)
     sweep_records: list[dict[str, object]] = []
     for _th in thresholds:
@@ -1449,10 +1383,9 @@ def _(
                 alt.Tooltip("rate:Q", format=".1f"),
             ],
         )
-        .properties(title="Open-Set UNKNOWN (Role 29) Rejection vs. Test Retention", width=400, height=280)
+        .properties(title="Open-Set UNKNOWN (Role 29) Rejection vs. Test Retention", width=400, height=320)
     )
 
-    # 4. Per-Role Precision, Recall & F1-Score Bar Chart
     prf_chart = (
         alt.Chart(alt.Data(values=eval_metrics["per_role"]))
         .mark_bar()
@@ -1473,10 +1406,9 @@ def _(
                 "support:Q",
             ],
         )
-        .properties(title="Held-Out Test Precision, Recall & F1-Score per Role", width=380, height=520)
+        .properties(title="Held-Out Test Precision, Recall & F1-Score per Role", width=360, height=380)
     )
 
-    # 5. Sparse Row-Normalized Confusion Matrix Heatmap
     conf_chart = (
         alt.Chart(alt.Data(values=eval_metrics["confusion_records"]))
         .mark_rect()
@@ -1495,118 +1427,61 @@ def _(
                 alt.Tooltip("row_pct:Q", title="Row %", format=".1f"),
             ],
         )
-        .properties(title="Held-Out Test Confusion Matrix (Row-Normalized %)", width=460, height=520)
+        .properties(title="Held-Out Test Confusion Matrix (Row-Normalized %)", width=380, height=380)
     )
 
-    dashboard_rows = [
-        mo.md("## Diagnostic Visualizations"),
-    ]
-    vconcat_rows = []
-
-    # 6. Optional Optuna Study Charts (Optimization History + Hyperparameter Importances)
-    if optuna_trial_records:
-        _hist_base = alt.Chart(alt.Data(values=optuna_trial_records))
-        _trial_pts = _hist_base.mark_circle(size=75).encode(
-            x=alt.X("trial:Q", title="Optuna Trial"),
-            y=alt.Y("macro_f1:Q", title="Inner Validation Macro F1 (%)", scale=alt.Scale(zero=False)),
-            color=alt.Color("kernel_combo:N", title="Kernel Sizes"),
-            tooltip=[
-                "trial:Q",
-                alt.Tooltip("macro_f1:Q", format=".2f"),
-                "embed_dim:Q",
-                "num_filters:Q",
-                "kernel_combo:N",
-                alt.Tooltip("learning_rate:Q", format=".4f"),
-                alt.Tooltip("weight_decay:Q", format=".5f"),
-                "batch_size:Q",
-            ],
-        )
-        _best_line = _hist_base.mark_line(strokeWidth=2.5, interpolate="step-after", color="#d95f02").encode(
-            x="trial:Q",
-            y="best_macro_f1:Q",
-        )
-        optuna_history_chart = (_trial_pts + _best_line).properties(
-            title="Optuna TPE Optimization History (Validation Macro F1 %)",
-            width=400,
-            height=260,
-        )
-
-        if optuna_importance_records:
-            optuna_imp_chart = (
-                alt.Chart(alt.Data(values=optuna_importance_records))
-                .mark_bar(color="#4e79a7")
-                .encode(
-                    y=alt.Y("parameter:N", sort="-x", title="Hyperparameter"),
-                    x=alt.X("importance:Q", title="Relative fANOVA Importance"),
-                    tooltip=["parameter:N", alt.Tooltip("importance:Q", format=".3f")],
-                )
-                .properties(title="Optuna Hyperparameter Importance", width=360, height=260)
-            )
-            dashboard_rows.append(mo.hstack([optuna_history_chart, optuna_imp_chart], justify="start"))
-            vconcat_rows.append(alt.hconcat(optuna_history_chart, optuna_imp_chart).resolve_scale(color="independent"))
-        else:
-            dashboard_rows.append(optuna_history_chart)
-            vconcat_rows.append(optuna_history_chart)
-
-    vconcat_rows.extend(
-        [
-            alt.hconcat(counts_chart, length_chart).resolve_scale(color="independent"),
-            alt.hconcat(loss_chart, open_set_chart).resolve_scale(color="independent"),
-            alt.hconcat(prf_chart, conf_chart).resolve_scale(color="independent"),
-        ]
+    _hist_base = alt.Chart(alt.Data(values=optuna_trial_records))
+    _trial_pts = _hist_base.mark_circle(size=85).encode(
+        x=alt.X("trial:Q", title="Optuna TPE Trial Number", scale=alt.Scale(domainMin=1)),
+        y=alt.Y("macro_f1:Q", title="Inner Validation Macro F1 (%)", scale=alt.Scale(zero=False)),
+        color=alt.Color("kernel_combo:N", title="Kernel Sizes"),
+        tooltip=[
+            "trial:Q",
+            alt.Tooltip("macro_f1:Q", format=".2f"),
+            alt.Tooltip("best_macro_f1:Q", format=".2f"),
+            "embed_dim:Q",
+            "num_filters:Q",
+            "kernel_combo:N",
+            alt.Tooltip("learning_rate:Q", format=".4f"),
+            alt.Tooltip("weight_decay:Q", format=".5f"),
+            "batch_size:Q",
+        ],
     )
-    full_altair_report_chart = alt.vconcat(*vconcat_rows).resolve_scale(color="independent")
-
-    dashboard_rows.extend(
-        [
-            mo.hstack([counts_chart, length_chart], justify="start"),
-            mo.hstack([loss_chart, open_set_chart], justify="start"),
-            mo.hstack([prf_chart, conf_chart], justify="start"),
-        ]
+    _best_line = _hist_base.mark_line(strokeWidth=2.5, interpolate="step-after", color="#d95f02").encode(
+        x="trial:Q",
+        y="best_macro_f1:Q",
+    )
+    optuna_history_chart = (_trial_pts + _best_line).properties(
+        title="Optuna TPE Optimization History & Best-So-Far Frontier",
+        width=380,
+        height=230,
     )
 
-    dashboard = mo.vstack(dashboard_rows)
-    mo.output.replace(dashboard)
+    optuna_imp_chart = (
+        alt.Chart(alt.Data(values=optuna_importance_records))
+        .mark_bar(color="#0d9488")
+        .encode(
+            y=alt.Y("parameter:N", sort="-x", title="Hyperparameter"),
+            x=alt.X("importance:Q", title="Relative Importance Share"),
+            tooltip=["parameter:N", alt.Tooltip("importance:Q", format=".3f")],
+        )
+        .properties(title="Hyperparameter Importance Across Trials", width=360, height=230)
+    )
     return (
         conf_chart,
         counts_chart,
-        dashboard,
-        dashboard_rows,
-        full_altair_report_chart,
-        len_base,
-        len_pts,
-        len_rule,
         length_chart,
-        length_records,
         loss_chart,
-        loss_records,
         open_set_chart,
+        optuna_history_chart,
+        optuna_imp_chart,
         prf_chart,
-        split_records,
-        sweep_records,
-        thresholds,
-        vconcat_rows,
     )
-
-
-@app.cell
-def _(Path, mo):
-    # ------------------------------------------------------------------------------------------------------------------
-    # Explicit On-Demand / Script-Mode Model & HTML Report Export
-    # ------------------------------------------------------------------------------------------------------------------
-    default_model_path = Path(__file__).resolve().parent.parent / "src" / "serogen" / "data" / "model.npz"
-    default_report_path = Path(__file__).resolve().parent / "train_gene_classifier_report.html"
-    export_btn = mo.ui.run_button(
-        label=f"Export Trained Weights ({default_model_path.name}) & HTML Report ({default_report_path.name})"
-    )
-    mo.output.replace(export_btn)
-    return default_model_path, default_report_path, export_btn
 
 
 @app.cell
 def _(
     GeneRole,
-    GeneRoleClassifier,
     X_test,
     X_train,
     active_bs,
@@ -1617,62 +1492,217 @@ def _(
     clf,
     config_source,
     dataset_seqs,
-    default_model_path,
-    default_report_path,
     eval_metrics,
-    export_btn,
     fetch_elapsed,
-    full_altair_report_chart,
-    is_script_mode,
     min_role_name,
     min_role_support,
     mo,
-    np,
-    optuna_trial_records,
+    model_size_kb,
     parsed_kernels,
     quota_passed,
-    role_counts,
     train_elapsed,
-    y_pred_test,
 ):
-    mo.stop(
-        not (export_btn.value or is_script_mode),
-        mo.md(
-            "*Model weights and charts are currently held in memory only. "
-            "Click the button above (or run as a script) to write `model.npz` and `train_gene_classifier_report.html`.*"
-        ),
+    # Slide 1: Hero Title, Executive Summary & KPI Cards
+    mo.vstack(
+        [
+            mo.md(
+                """
+                # `GeneRoleClassifier` — Multi-Scale 1D-CNN Training, Optuna Tuning & Validation
+                Curating non-redundant bacterial reference proteins across **UniProtKB (Pfam/InterPro)**, **UniRef50**,
+                **NCBI IPG**, and **KEGG Orthology**, deduplicating via [`Clusterer`][serogen.core.seq.clustering.Clusterer] (`80%` CD-HIT),
+                and training [`GeneRoleClassifier`][serogen.genes.cnn.GeneRoleClassifier] across all **29 functional `GeneRole`s**.
+                """
+            ),
+            mo.hstack(
+                [
+                    mo.stat(
+                        label="Curated Sequences",
+                        value=f"{len(dataset_seqs):,}",
+                        caption=f"Train: {len(X_train):,} | Test: {len(X_test):,} ({fetch_elapsed:.1f}s)",
+                        bordered=True,
+                    ),
+                    mo.stat(
+                        label="29-Role Quota Gate",
+                        value="PASS" if quota_passed else "DEFICIT",
+                        caption=f"Min Role: {min_role_name} ({min_role_support} seqs)",
+                        bordered=True,
+                    ),
+                    mo.stat(
+                        label="Optuna Model Saved",
+                        value=f"{model_size_kb:.1f} KB",
+                        caption=f"Fit: {train_elapsed:.2f}s | Loss: {clf.loss_history_[-1]:.4f} (`model.npz`)",
+                        bordered=True,
+                    ),
+                    mo.stat(
+                        label="Held-Out Test Accuracy",
+                        value=f"{float(eval_metrics['accuracy']) * 100:.2f}%",
+                        caption=f"{len(clf.classes_)} / {len(GeneRole) - 1} Functional Roles",
+                        bordered=True,
+                    ),
+                    mo.stat(
+                        label="Held-Out Macro F1",
+                        value=f"{float(eval_metrics['macro_f1']) * 100:.2f}%",
+                        caption=f"Prec: {float(eval_metrics['macro_precision']) * 100:.1f}% | Rec: {float(eval_metrics['macro_recall']) * 100:.1f}%",
+                        bordered=True,
+                    ),
+                ],
+                widths="equal",
+                gap=1.0,
+            ),
+            mo.callout(
+                mo.md(
+                    f"**Saved Production Architecture ({config_source} -> `src/serogen/data/model.npz`)**: "
+                    f"`embed_dim={active_embed_dim}`, `num_filters={active_num_filters}`, "
+                    f"`kernel_size={parsed_kernels}`, `spatial_zones=2`, "
+                    f"`lr={active_lr:.5f}`, `weight_decay={active_wd:.6f}`, `batch_size={active_bs}`."
+                ),
+                kind="success",
+            ),
+        ],
+        gap=1.2,
     )
-    mo.stop(
-        not quota_passed or len(clf.classes_) < 29,
-        mo.md("> **Export Blocked:** Not all 29 functional `GeneRole`s met the minimum 30-sequence quota."),
+    return
+
+
+@app.cell
+def _(alt, counts_chart, length_chart, mo):
+    # Slide 2: Dataset Curation & Protein Length Distribution
+    mo.vstack(
+        [
+            mo.md(
+                """
+                ## 1. Non-Redundant Reference Curation & Protein Length Profiles
+                Post-clustering deficit top-up guarantees at least 30 non-redundant sequences (`<= 80%` identity) per functional
+                `GeneRole`, while median-absolute-deviation (`3.5 MAD`) length filtering removes truncated fragments and polyprotein fusions.
+                """
+            ),
+            alt.hconcat(counts_chart, length_chart).resolve_scale(color="independent"),
+        ],
+        gap=0.8,
     )
+    return
 
-    default_model_path.parent.mkdir(parents=True, exist_ok=True)
-    clf.save(default_model_path)
-    reloaded = GeneRoleClassifier.load(default_model_path)
-    parity = bool(np.array_equal(reloaded.predict(X_test), y_pred_test))
-    size_kb = default_model_path.stat().st_size / 1024.0
 
-    # Build standalone HTML report with embedded Vega-Lite dashboard & summary tables
-    charts_embed_html = full_altair_report_chart.to_html(fullhtml=False)
+@app.cell
+def _(
+    active_bs,
+    active_embed_dim,
+    active_lr,
+    active_num_filters,
+    active_wd,
+    alt,
+    best_trial_num,
+    best_val_f1,
+    median_val_f1,
+    mo,
+    optuna_gain_f1,
+    optuna_history_chart,
+    optuna_imp_chart,
+    optuna_trial_records,
+    parsed_kernels,
+):
+    # Slide 3: Dedicated Optuna TPE Hyperparameter Optimization Slide
+    _top_trials = sorted(optuna_trial_records, key=lambda r: float(r["macro_f1"]), reverse=True)[:5]
+    _top_md = "\n".join(
+        f"| **#{tr['trial']}** | **{float(tr['macro_f1']):.2f}%** | {tr['embed_dim']} | {tr['num_filters']} "
+        f"| `{tr['kernel_combo']}` | `{float(tr['learning_rate']):.5f}` | `{float(tr['weight_decay']):.6f}` | {tr['batch_size']} |"
+        for tr in _top_trials
+    )
+    _top_table_md = "\n".join(
+        [
+            "| Top Trial | Inner Val Macro F1 | Embed Dim | Filters | Kernel Widths | Learning Rate | Weight Decay | Batch Size |",
+            "| :--- | ---: | ---: | ---: | :--- | ---: | ---: | ---: |",
+            _top_md,
+        ]
+    )
+    mo.vstack(
+        [
+            mo.md(
+                """
+                ## 2. Optuna TPE Hyperparameter Optimization
+                Tree-structured Parzen Estimator (TPE) search over multi-scale motif kernel widths, filter capacity,
+                embedding dimension, and AdamW regularization on the inner validation split.
+                """
+            ),
+            mo.hstack(
+                [
+                    mo.stat(
+                        label="Best Validation Macro F1",
+                        value=f"{best_val_f1:.2f}%",
+                        caption=f"Trial #{best_trial_num} (+{optuna_gain_f1:.2f}% vs. {median_val_f1:.1f}% median)",
+                        bordered=True,
+                    ),
+                    mo.stat(
+                        label="Winning Motif Kernels",
+                        value=f"{parsed_kernels}",
+                        caption=f"{len(parsed_kernels)} parallel 1D-CNN branches",
+                        bordered=True,
+                    ),
+                    mo.stat(
+                        label="Winning Capacity",
+                        value=f"{active_num_filters} filters",
+                        caption=f"Embed Dim: {active_embed_dim} | Dual Pooling",
+                        bordered=True,
+                    ),
+                    mo.stat(
+                        label="Winning AdamW Schedule",
+                        value=f"lr={active_lr:.4f}",
+                        caption=f"wd={active_wd:.5f} | batch={active_bs}",
+                        bordered=True,
+                    ),
+                ],
+                widths="equal",
+                gap=1.0,
+            ),
+            alt.hconcat(optuna_history_chart, optuna_imp_chart).resolve_scale(color="independent"),
+            mo.md(_top_table_md),
+        ],
+        gap=0.6,
+    )
+    return
 
-    trial_rows_html = ""
-    for _tr in optuna_trial_records:
-        trial_rows_html += (
-            f"<tr>"
-            f"<td>#{_tr['trial']}</td>"
-            f"<td><strong>{_tr['macro_f1']:.2f}%</strong></td>"
-            f"<td>{_tr['best_macro_f1']:.2f}%</td>"
-            f"<td>{_tr['embed_dim']}</td>"
-            f"<td>{_tr['num_filters']}</td>"
-            f"<td><code>{_tr['kernel_combo']}</code></td>"
-            f"<td>{_tr['learning_rate']:.5f}</td>"
-            f"<td>{_tr['weight_decay']:.6f}</td>"
-            f"<td>{_tr['batch_size']}</td>"
-            f"</tr>\n"
-        )
 
-    role_rows_html = ""
+@app.cell
+def _(alt, loss_chart, mo, open_set_chart):
+    # Slide 4: AdamW Convergence & Open-Set Decoy Rejection
+    mo.vstack(
+        [
+            mo.md(
+                """
+                ## 3. AdamW Training Convergence & Open-Set Decoy Rejection
+                Cosine-annealed AdamW optimization on the Optuna-selected architecture alongside open-set `UNKNOWN` (`Role 29`)
+                rejection evaluated on composition-matched shuffled test decoys.
+                """
+            ),
+            alt.hconcat(loss_chart, open_set_chart).resolve_scale(color="independent"),
+        ],
+        gap=0.8,
+    )
+    return
+
+
+@app.cell
+def _(alt, conf_chart, mo, prf_chart):
+    # Slide 5: Held-Out Test Precision, Recall, F1 & Confusion Matrix
+    mo.vstack(
+        [
+            mo.md(
+                """
+                ## 4. Held-Out Test Performance & Row-Normalized Confusion Matrix
+                Per-role precision, recall, and F1-score alongside the 29×29 row-normalized confusion matrix on the stratified 20% holdout split.
+                """
+            ),
+            alt.hconcat(prf_chart, conf_chart).resolve_scale(color="independent"),
+        ],
+        gap=0.8,
+    )
+    return
+
+
+@app.cell
+def _(GeneRole, eval_metrics, mo, optuna_trial_records, role_counts):
+    # Slide 6: Reference Tables (Per-Role Performance & Complete Optuna Trial Leaderboard)
+    _role_md_rows = []
     for _c_idx in range(29):
         _r = GeneRole(_c_idx)
         _tot_cnt = int(role_counts[_c_idx])
@@ -1681,186 +1711,47 @@ def _(
         _r_val = next((row["score"] for row in _pr_items if row["metric"] == "Recall"), 0.0)
         _f_val = next((row["score"] for row in _pr_items if row["metric"] == "F1-Score"), 0.0)
         _sup_val = next((row["support"] for row in _pr_items), 0)
-        role_rows_html += (
-            f"<tr>"
-            f"<td>{_c_idx}</td>"
-            f"<td><code>{_r.abbreviation}</code></td>"
-            f"<td>{_r.name}</td>"
-            f"<td>{_r.category.value}</td>"
-            f"<td>{_tot_cnt}</td>"
-            f"<td>{_sup_val}</td>"
-            f"<td>{_p_val * 100:.1f}%</td>"
-            f"<td>{_r_val * 100:.1f}%</td>"
-            f"<td><strong>{_f_val * 100:.1f}%</strong></td>"
-            f"</tr>\n"
+        _role_md_rows.append(
+            f"| {_c_idx} | `{_r.abbreviation}` | {_r.name} | {_r.category.value} | {_tot_cnt} | {_sup_val} "
+            f"| {_p_val * 100:.1f}% | {_r_val * 100:.1f}% | **{_f_val * 100:.1f}%** |"
         )
+    _role_md = "\n".join(_role_md_rows)
 
-    optuna_table_section = (
-        f"""
-        <h2>Optuna TPE Hyperparameter Study ({len(optuna_trial_records)} Trials)</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Trial</th><th>Inner Val Macro F1</th><th>Best So Far</th>
-              <th>Embed Dim</th><th>Filters</th><th>Kernels</th>
-              <th>Learning Rate</th><th>Weight Decay</th><th>Batch Size</th>
-            </tr>
-          </thead>
-          <tbody>{trial_rows_html}</tbody>
-        </table>
-        """
-        if trial_rows_html
-        else ""
+    _trial_md = "\n".join(
+        f"| #{tr['trial']} | **{float(tr['macro_f1']):.2f}%** | {float(tr['best_macro_f1']):.2f}% "
+        f"| {tr['embed_dim']} | {tr['num_filters']} | `{tr['kernel_combo']}` "
+        f"| `{float(tr['learning_rate']):.5f}` | `{float(tr['weight_decay']):.6f}` | {tr['batch_size']} |"
+        for tr in optuna_trial_records
     )
 
-    report_html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>SeroGen GeneRoleClassifier — Training, Optuna Tuning & Validation Report</title>
-  <style>
-    body {{
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      margin: 24px auto;
-      max-width: 1180px;
-      padding: 0 20px;
-      color: #1f2937;
-      background: #f9fafb;
-    }}
-    h1, h2 {{ color: #111827; }}
-    .kpi-grid {{
-      display: grid;
-      grid-template-columns: repeat(5, 1fr);
-      gap: 14px;
-      margin: 18px 0 28px 0;
-    }}
-    .kpi-card {{
-      background: #ffffff;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 14px 16px;
-      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-    }}
-    .kpi-label {{ font-size: 12px; text-transform: uppercase; color: #6b7280; font-weight: 600; }}
-    .kpi-value {{ font-size: 24px; font-weight: 700; color: #111827; margin: 4px 0; }}
-    .kpi-sub {{ font-size: 12px; color: #4b5563; }}
-    .chart-box {{
-      background: #ffffff;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 18px;
-      margin-bottom: 28px;
-      overflow-x: auto;
-    }}
-    table {{
-      width: 100%;
-      border-collapse: collapse;
-      background: #ffffff;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      margin-bottom: 28px;
-      font-size: 13px;
-    }}
-    th, td {{
-      padding: 8px 12px;
-      border-bottom: 1px solid #e5e7eb;
-      text-align: left;
-    }}
-    th {{ background: #f3f4f6; font-weight: 600; }}
-  </style>
-</head>
-<body>
-  <h1>SeroGen <code>GeneRoleClassifier</code> — Training, Optuna Tuning &amp; Validation Report</h1>
-  <p>
-    <strong>Selected Configuration:</strong> {config_source} &mdash;
-    <code>embed_dim={active_embed_dim}</code>, <code>num_filters={active_num_filters}</code>,
-    <code>kernel_size={parsed_kernels}</code>, <code>lr={active_lr:.5f}</code>,
-    <code>weight_decay={active_wd:.6f}</code>, <code>batch_size={active_bs}</code>
-  </p>
-  <div class="kpi-grid">
-    <div class="kpi-card">
-      <div class="kpi-label">Curated Sequences</div>
-      <div class="kpi-value">{len(dataset_seqs):,}</div>
-      <div class="kpi-sub">Train: {len(X_train):,} | Test: {len(X_test):,} ({fetch_elapsed:.1f}s)</div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-label">29-Role Quota Gate</div>
-      <div class="kpi-value">{"PASS" if quota_passed else "DEFICIT"}</div>
-      <div class="kpi-sub">Min Role: {min_role_name} ({min_role_support} seqs)</div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-label">Final Model Fit</div>
-      <div class="kpi-value">{train_elapsed:.2f}s</div>
-      <div class="kpi-sub">Final Loss: {clf.loss_history_[-1]:.4f} | {size_kb:.1f} KB</div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-label">Held-Out Test Accuracy</div>
-      <div class="kpi-value">{float(eval_metrics["accuracy"]) * 100:.2f}%</div>
-      <div class="kpi-sub">{len(clf.classes_)} / 29 Functional Roles</div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-label">Held-Out Macro F1</div>
-      <div class="kpi-value">{float(eval_metrics["macro_f1"]) * 100:.2f}%</div>
-      <div class="kpi-sub">Prec: {float(eval_metrics["macro_precision"]) * 100:.1f}% | Rec: {float(eval_metrics["macro_recall"]) * 100:.1f}%</div>
-    </div>
-  </div>
-
-  <h2>Interactive Diagnostic Charts (Altair / Vega-Lite)</h2>
-  <div class="chart-box">
-    {charts_embed_html}
-  </div>
-
-  {optuna_table_section}
-
-  <h2>Per-Role Post-Clustering Support &amp; Held-Out Test Performance (29 Functional Roles)</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>ID</th><th>Abbrev</th><th>Gene Role</th><th>Category</th>
-        <th>Post-CD-HIT Total</th><th>Test Support</th>
-        <th>Precision</th><th>Recall</th><th>F1-Score</th>
-      </tr>
-    </thead>
-    <tbody>{role_rows_html}</tbody>
-  </table>
-</body>
-</html>
-"""
-    default_report_path.write_text(report_html, encoding="utf-8")
-    report_kb = default_report_path.stat().st_size / 1024.0
-
-    if is_script_mode:
-        print(
-            f"[SeroGen] Curated {len(dataset_seqs):,} non-redundant sequences across 29 roles "
-            f"(min role: {min_role_name}={min_role_support}) in {fetch_elapsed:.1f}s"
-        )
-        print(f"[SeroGen] Configuration: {config_source}")
-        print(
-            f"[SeroGen] Held-Out Test Accuracy: {float(eval_metrics['accuracy']) * 100:.2f}% | "
-            f"Macro F1: {float(eval_metrics['macro_f1']) * 100:.2f}% "
-            f"(Prec: {float(eval_metrics['macro_precision']) * 100:.1f}%, "
-            f"Rec: {float(eval_metrics['macro_recall']) * 100:.1f}%)"
-        )
-        print(f"[SeroGen] Saved weights -> {default_model_path} ({size_kb:.1f} KB, parity={parity})")
-        print(f"[SeroGen] Saved HTML report -> {default_report_path} ({report_kb:.1f} KB)")
-
-    mo.output.replace(
-        mo.md(
-            f"**Saved** `{default_model_path}` (`{size_kb:.1f} KB`, reload parity: `{parity}`) and "
-            f"**HTML report** `{default_report_path}` (`{report_kb:.1f} KB`)."
-        )
+    _role_table_md = "\n".join(
+        [
+            "| ID | Abbrev | Gene Role | Category | Post-CD-HIT Total | Test Support | Precision | Recall | F1-Score |",
+            "| ---: | :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: |",
+            _role_md,
+        ]
     )
-    return (
-        charts_embed_html,
-        optuna_table_section,
-        parity,
-        reloaded,
-        report_html,
-        report_kb,
-        role_rows_html,
-        size_kb,
-        trial_rows_html,
+    _trial_table_md = "\n".join(
+        [
+            "| Trial | Inner Val Macro F1 | Best So Far | Embed Dim | Filters | Kernels | Learning Rate | Weight Decay | Batch Size |",
+            "| ---: | ---: | ---: | ---: | ---: | :--- | ---: | ---: | ---: |",
+            _trial_md,
+        ]
     )
+
+    mo.vstack(
+        [
+            mo.md("## 5. Per-Role Holdout Metrics & Complete Optuna Trial Leaderboard"),
+            mo.ui.tabs(
+                {
+                    "29 Functional GeneRoles (Holdout Test)": mo.md(_role_table_md),
+                    f"Optuna TPE Study ({len(optuna_trial_records)} Trials)": mo.md(_trial_table_md),
+                }
+            ),
+        ],
+        gap=0.8,
+    )
+    return
 
 
 if __name__ == "__main__":

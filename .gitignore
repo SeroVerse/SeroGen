@@ -21,9 +21,13 @@ src/serogen/_version.py
 
 # Documentation build output
 site/
+docs/notebooks/assets/
 
-# Marimo & IDE files
+# Marimo & IDE files (keep cached notebook session snapshots in scripts/)
 __marimo__/
+!scripts/__marimo__/
+scripts/__marimo__/*
+!scripts/__marimo__/session/
 .idea/
 .vscode/
 .DS_Store

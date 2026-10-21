@@ -12,14 +12,15 @@
 # serogen = { path = "..", editable = true }
 # ///
 
-"""Marimo notebook benchmarking single-pass bacterial + prophage ORF prediction on E. coli K-12 MG1655 (CP014225.1)."""
+"""Marimo slide deck & benchmark for single-pass bacterial + prophage ORF prediction on E. coli K-12 MG1655 (CP014225.1)."""
 
 import marimo
 
-__generated_with = "0.11.0"
+__generated_with = "0.25.1"
 app = marimo.App(
     width="full",
     app_title="SeroGen — Single-Pass Bacterial & Prophage ORF Benchmark (E. coli K-12 CP014225.1)",
+    layout_file="layouts/benchmark_prophage_orfs.slides.json",
 )
 
 
@@ -57,7 +58,7 @@ def _():
 
 
 @app.cell
-def _(FastaReader, Path, mo, np, re, urllib):
+def _(FastaReader, Path, np, re, urllib):
     # Locate or fetch E. coli K-12 substr. MG1655 gold-standard reference (GenBank: CP014225.1)
     scratch_dir = Path("/Users/tsta0015/.gemini/antigravity-cli/brain/3234e4cd-07e9-4eee-9d70-2232cae0cf9f/scratch")
     cache_dir = scratch_dir if scratch_dir.exists() else Path(__file__).resolve().parent / "cassettes"
@@ -155,18 +156,11 @@ def _(FastaReader, Path, mo, np, re, urllib):
         else:
             _c["overlap_type"] = ">4-bp overlap"
 
-    mo.md(
-        f"""
-        # Single-Pass Bacterial & Prophage ORF Prediction Benchmark
-        **Reference Genome**: *Escherichia coli* str. K-12 substr. MG1655 (`GenBank: CP014225.1`, **{genome_len:,} bp**)<br>
-        **Intact Reference CDSs**: **{len(ref_cds):,}** total (**{sum(c["region"] != "Host" for c in ref_cds)}** across 9 structurally embedded prophages, **{sum(c["region"] == "Host" for c in ref_cds):,}** host chromosome)
-        """
-    )
     return PROPHAGES, cache_dir, fa_path, gb_path, genome_len, genome_seq, raw_bytes, ref_cds
 
 
 @app.cell
-def _(GeneticCode, OrfPredictor, genome_len, genome_seq, np, raw_bytes, ref_cds, PROPHAGES, time):
+def _(GeneticCode, OrfPredictor, PROPHAGES, genome_len, genome_seq, np, raw_bytes, ref_cds, time):
     # Warm up Numba JIT compilation before timing
     _warmup_seq = genome_seq.seq[:20_000]
     OrfPredictor(whole_genome=True, genetic_code=GeneticCode.bacterial, include_phage=False).predict(_warmup_seq)
@@ -214,7 +208,6 @@ def _(GeneticCode, OrfPredictor, genome_len, genome_seq, np, raw_bytes, ref_cds,
             }
         )
 
-    # Compare against hypothetical Two-Pass execution (Bacterial pass + Viral pass)
     _two_pass_time = time_baseline + time_phage
     alt_code_timings.append(
         {
@@ -242,7 +235,6 @@ def _(GeneticCode, OrfPredictor, genome_len, genome_seq, np, raw_bytes, ref_cds,
     base_by_stop, base_exact = _build_lookup(genes_baseline)
     phage_by_stop, phage_exact = _build_lookup(genes_phage)
 
-    # Annotate each reference CDS with baseline and phage-aware match status
     for _c in ref_cds:
         _sc = (_c["end"] if _c["strand"] == 1 else _c["start"], _c["strand"])
         _key = (_c["start"], _c["end"], _c["strand"])
@@ -251,7 +243,6 @@ def _(GeneticCode, OrfPredictor, genome_len, genome_seq, np, raw_bytes, ref_cds,
         _c["phage_stop_hit"] = _sc in phage_by_stop
         _c["phage_exact_hit"] = _key in phage_exact
 
-    # Aggregate metrics per prophage, all prophages combined, and host chromosome
     region_groups = [(p[0], p[1], p[2], p[3], [c for c in ref_cds if c["region"] == p[0]]) for p in PROPHAGES] + [
         (
             "All Prophages (9)",
@@ -328,16 +319,25 @@ def _(GeneticCode, OrfPredictor, genome_len, genome_seq, np, raw_bytes, ref_cds,
                 }
             )
 
+    recovered_prophage_orfs = [
+        c for c in ref_cds if c["region"] != "Host" and c["phage_stop_hit"] and not c["base_stop_hit"]
+    ]
+    exact_rescued_prophage_orfs = [
+        c for c in ref_cds if c["region"] != "Host" and c["phage_exact_hit"] and not c["base_exact_hit"]
+    ]
+
     return (
         alt_code_timings,
         base_by_stop,
         base_exact,
+        exact_rescued_prophage_orfs,
         genes_baseline,
         genes_phage,
         phage_by_stop,
         phage_exact,
         pred_baseline,
         pred_phage,
+        recovered_prophage_orfs,
         region_chart_rows,
         region_metrics,
         time_baseline,
@@ -346,8 +346,8 @@ def _(GeneticCode, OrfPredictor, genome_len, genome_seq, np, raw_bytes, ref_cds,
 
 
 @app.cell
-def _(PROPHAGES, alt, genome_len, mo, np, raw_bytes, ref_cds, region_chart_rows, alt_code_timings):
-    # Chart 1: 3'-Stop Recall & Exact Recall Across the 9 Embedded Prophages and Host Chromosome
+def _(PROPHAGES, alt, alt_code_timings, genome_len, np, raw_bytes, ref_cds, region_chart_rows):
+    # Build all 4 interactive Altair charts sized for 16:9 widescreen slide layout
     _region_order = [p[0] for p in PROPHAGES] + ["All Prophages (9)", "Host Chromosome"]
     chart_recall = (
         alt.Chart(alt.Data(values=region_chart_rows))
@@ -363,7 +363,7 @@ def _(PROPHAGES, alt, genome_len, mo, np, raw_bytes, ref_cds, region_chart_rows,
                 title="Predictor Configuration",
                 scale=alt.Scale(
                     domain=["Baseline (Bacterial-Only)", "Single-Pass Phage-Aware"],
-                    range=["#94a3b8", "#2563eb"],
+                    range=["#94a3b8", "#0d9488"],
                 ),
             ),
             column=alt.Column("metric:N", title=None, header=alt.Header(labelFontSize=13, labelFontWeight="bold")),
@@ -376,11 +376,10 @@ def _(PROPHAGES, alt, genome_len, mo, np, raw_bytes, ref_cds, region_chart_rows,
             ],
         )
         .properties(
-            width=420, height=300, title="Prophage & Host CDS Recall: Baseline vs. Single-Pass Phage-Aware OrfPredictor"
+            width=430, height=320, title="Prophage & Host CDS Recall: Baseline vs. Single-Pass Phage-Aware OrfPredictor"
         )
     )
 
-    # Chart 2: Sliding 4-kb GC Profile Across CP014225.1 with Embedded Prophage Islands Highlighted
     _step = 4000
     _is_gc = (
         (raw_bytes == ord("G")) | (raw_bytes == ord("C")) | (raw_bytes == ord("g")) | (raw_bytes == ord("c"))
@@ -455,12 +454,11 @@ def _(PROPHAGES, alt, genome_len, mo, np, raw_bytes, ref_cds, region_chart_rows,
         )
     )
     chart_gc_profile = (_band_rects + _gc_line + _gc_phage_pts + _band_labels).properties(
-        width=880,
-        height=250,
+        width=900,
+        height=320,
         title="Sliding 4-kb Local GC Adaptation Across E. coli K-12 (CP014225.1) Highlighting AT-Rich Prophage Islands",
     )
 
-    # Chart 3: Recall by Prophage ORF Length Bin and Operon Overlap Type
     _prophage_only = [c for c in ref_cds if c["region"] != "Host"]
     _len_bins = [
         ("90–120 bp (Small Phage ORFs)", lambda n: 90 <= n <= 123),
@@ -525,7 +523,7 @@ def _(PROPHAGES, alt, genome_len, mo, np, raw_bytes, ref_cds, region_chart_rows,
                 title="Predictor Configuration",
                 scale=alt.Scale(
                     domain=["Baseline (Bacterial-Only)", "Single-Pass Phage-Aware"],
-                    range=["#94a3b8", "#16a34a"],
+                    range=["#94a3b8", "#0d9488"],
                 ),
             ),
             column=alt.Column(
@@ -542,10 +540,9 @@ def _(PROPHAGES, alt, genome_len, mo, np, raw_bytes, ref_cds, region_chart_rows,
             ],
         )
         .resolve_scale(x="independent")
-        .properties(width=420, height=260, title="Prophage ORF Recovery by Gene Length & Operon Overlap Type")
+        .properties(width=420, height=280, title="Prophage ORF Recovery by Gene Length & Operon Overlap Type")
     )
 
-    # Chart 4: Throughput Across Viral Genetic Codes vs Naive Two-Pass Execution
     chart_throughput = (
         alt.Chart(alt.Data(values=alt_code_timings))
         .mark_bar(cornerRadiusTopRight=3, cornerRadiusBottomRight=3)
@@ -555,7 +552,7 @@ def _(PROPHAGES, alt, genome_len, mo, np, raw_bytes, ref_cds, region_chart_rows,
             color=alt.Color(
                 "pass_type:N",
                 title="Execution Strategy",
-                scale=alt.Scale(domain=["Single-Pass", "Two-Pass"], range=["#0284c7", "#f97316"]),
+                scale=alt.Scale(domain=["Single-Pass", "Two-Pass"], range=["#0d9488", "#f97316"]),
             ),
             tooltip=[
                 alt.Tooltip("mode:N", title="Mode"),
@@ -565,26 +562,156 @@ def _(PROPHAGES, alt, genome_len, mo, np, raw_bytes, ref_cds, region_chart_rows,
             ],
         )
         .properties(
-            width=880,
-            height=200,
+            width=860,
+            height=260,
             title="Single-Pass Decoding Throughput Across Bacterial & Viral Genetic Codes (4.66 Mb Genome)",
         )
     )
 
-    mo.vstack([chart_recall, chart_gc_profile, chart_stratified, chart_throughput])
     return chart_gc_profile, chart_recall, chart_stratified, chart_throughput
 
 
 @app.cell
-def _(mo, ref_cds, region_metrics, time_baseline, time_phage):
-    # Build markdown summary tables of per-region metrics and newly recovered prophage ORFs
-    recovered_prophage_orfs = [
-        c for c in ref_cds if c["region"] != "Host" and c["phage_stop_hit"] and not c["base_stop_hit"]
-    ]
-    exact_rescued_prophage_orfs = [
-        c for c in ref_cds if c["region"] != "Host" and c["phage_exact_hit"] and not c["base_exact_hit"]
-    ]
+def _(
+    exact_rescued_prophage_orfs,
+    genome_len,
+    mo,
+    recovered_prophage_orfs,
+    ref_cds,
+    region_metrics,
+    time_phage,
+):
+    # Slide 1: Title, Hero KPIs & Executive Overview
+    _prophage_summary = next(r for r in region_metrics if r["region"] == "All Prophages (9)")
+    _host_summary = next(r for r in region_metrics if r["region"] == "Host Chromosome")
+    _mb_per_s = (genome_len / 1e6) / max(time_phage, 1e-6)
 
+    mo.vstack(
+        [
+            mo.md(
+                f"""
+                # Single-Pass Bacterial & Prophage ORF Prediction
+                ### *Escherichia coli* str. K-12 substr. MG1655 (`GenBank: CP014225.1` — {genome_len:,} bp)
+                Co-predicting bacterial host genes and horizontally acquired prophage/viral ORFs in a **single 29-state HMM-Viterbi pass**.
+                """
+            ),
+            mo.hstack(
+                [
+                    mo.stat(
+                        label="Prophage 3'-Stop Recall",
+                        value=f"{_prophage_summary['phage_stop_recall']:.1f}%",
+                        caption=f"{_prophage_summary['stop_gain_pct']:+.1f}% vs. Bacterial-Only ({_prophage_summary['base_missed']} → {_prophage_summary['phage_missed']} missed)",
+                        bordered=True,
+                    ),
+                    mo.stat(
+                        label="Prophage Exact (5'+3') Recall",
+                        value=f"{_prophage_summary['phage_exact_recall']:.1f}%",
+                        caption=f"{_prophage_summary['exact_gain_pct']:+.1f}% (+{len(exact_rescued_prophage_orfs)} exact 5' starts rescued)",
+                        bordered=True,
+                    ),
+                    mo.stat(
+                        label="Host Chromosome Recall",
+                        value=f"{_host_summary['phage_stop_recall']:.1f}%",
+                        caption=f"{_host_summary['n_cds']:,} intact host CDSs ({_host_summary['phage_exact_recall']:.1f}% exact)",
+                        bordered=True,
+                    ),
+                    mo.stat(
+                        label="Newly Rescued Prophage ORFs",
+                        value=f"+{len(recovered_prophage_orfs)} ORFs",
+                        caption=f"Across 9 cryptic & lambdoid prophages ({len(ref_cds):,} total CDSs)",
+                        bordered=True,
+                    ),
+                    mo.stat(
+                        label="Single-Pass Throughput",
+                        value=f"{_mb_per_s:.1f} Mb/s",
+                        caption=f"{time_phage * 1000:.0f} ms wall time on 4.66 Mb chromosome",
+                        bordered=True,
+                    ),
+                ],
+                widths="equal",
+                gap=1.0,
+            ),
+            mo.callout(
+                mo.md(
+                    "**Key Takeaway**: Standard bacterial ORF callers miss small, AT-rich, and tightly overlapping prophage genes "
+                    "(such as seroconverting bacteriophage *gtrABC* and *oac* cassettes). `OrfPredictor(include_phage=True)` "
+                    "recovers **95.6%** of prophage 3'-stops and **79.3%** of exact 5'+3' boundaries in a single pass with zero two-pass overhead."
+                ),
+                kind="success",
+            ),
+        ],
+        gap=1.2,
+    )
+    return
+
+
+@app.cell
+def _(chart_gc_profile, mo):
+    # Slide 2: Sliding Local GC Adaptation Across AT-Rich Prophage Islands
+    mo.vstack(
+        [
+            mo.md(
+                """
+                ## 1. Sliding 4-kb Local GC Adaptation Across Prophage Islands
+                Cryptic and lambdoid prophages (`CP4-44`, `CPS-53`, `e14`, `Rac`, `Qin`) exhibit sharp local GC drops (`34%–44%` GC)
+                relative to the `50.8%` GC *E. coli* host background. `OrfPredictor` computes a prefix-sum 4-kb sliding GC bin (`0..43`)
+                at every nucleotide so hexamer codon emissions adapt seamlessly across prophage boundaries.
+                """
+            ),
+            chart_gc_profile,
+        ],
+        gap=1.0,
+    )
+    return
+
+
+@app.cell
+def _(chart_recall, mo):
+    # Slide 3: Per-Prophage & Host CDS Recall
+    mo.vstack(
+        [
+            mo.md(
+                """
+                ## 2. Prophage & Host CDS Recall Across All 9 Embedded Islands
+                Single-pass phage-aware decoding boosts recall across every defective and lambdoid prophage island while simultaneously
+                improving host chromosome 3'-stop recall (`98.7%` → `99.1%`).
+                """
+            ),
+            chart_recall,
+        ],
+        gap=1.0,
+    )
+    return
+
+
+@app.cell
+def _(chart_stratified, chart_throughput, mo):
+    # Slide 4: Stratified Recovery (Length & Overlap) and Decoding Throughput
+    mo.vstack(
+        [
+            mo.md(
+                """
+                ## 3. Operon Overlap Recovery & Single-Pass Decoding Throughput
+                Phage lysis/lysogeny modules rely on `1-bp` (`TGATG`/`TAATG`) and `4-bp` (`ATGA`) stop-start overlaps plus short
+                (`90–120 bp`) accessory ORFs. Direct HMM `E → M1` / `Er → M1r` overlap transitions and intergenic gap rescue capture these
+                without a second decoding pass.
+                """
+            ),
+            mo.ui.tabs(
+                {
+                    "By ORF Length & Operon Overlap": chart_stratified,
+                    "Throughput Across Genetic Codes": chart_throughput,
+                }
+            ),
+        ],
+        gap=0.8,
+    )
+    return
+
+
+@app.cell
+def _(mo, recovered_prophage_orfs, region_metrics):
+    # Slide 5: Interactive Summary Tables (Per-Region Metrics & Rescued Prophage ORFs)
     _rows_md = "\n".join(
         f"| **{r['region']}** | {r['span_kb']:.1f} kb | {r['gc_pct']:.1f}% | {r['n_cds']} "
         f"| {r['base_stop_recall']:.1f}% | **{r['phage_stop_recall']:.1f}%** ({r['stop_gain_pct']:+.1f}%) "
@@ -599,22 +726,35 @@ def _(mo, ref_cds, region_metrics, time_baseline, time_phage):
         for c in recovered_prophage_orfs
     )
 
-    mo.md(
-        f"""
-        ## Benchmark Summary Table (`CP014225.1` — 9 Prophages & Host Chromosome)
-        - **Baseline (`include_phage=False`, Table 11)**: `{time_baseline:.3f} s`
-        - **Single-Pass Phage-Aware (`include_phage=True`, `GeneticCode.viral`)**: `{time_phage:.3f} s`
-        - **Prophage ORFs Newly Recovered (3'-Stop)**: **+{len(recovered_prophage_orfs)}** ORFs (missed prophage ORFs reduced from **23** to **9** across all 9 prophages)
-        - **Prophage ORFs Newly Exact-Matched (5'+3')**: **+{len(exact_rescued_prophage_orfs)}** ORFs (`71.4%` → **`79.3%`**)
-
-        | Region | Span | Local GC | Intact CDS | Baseline 3'-Stop | Phage-Aware 3'-Stop | Baseline Exact | Phage-Aware Exact | Missed ORFs |
-        | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-        {_rows_md}
-
-        ### Newly Recovered Prophage ORFs in Single-Pass Phage-Aware Mode ({len(recovered_prophage_orfs)} ORFs)
-        | Prophage | Locus Tag | Gene | Coordinates (0-based) | Length | Operon Overlap | Product |
-        | :--- | :--- | :--- | :--- | ---: | :--- | :--- |
-        {_rec_md}
-        """
+    _summary_table_md = "\n".join(
+        [
+            "| Region | Span | Local GC | Intact CDS | Baseline 3'-Stop | Phage-Aware 3'-Stop | Baseline Exact | Phage-Aware Exact | Missed ORFs |",
+            "| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            _rows_md,
+        ]
     )
-    return exact_rescued_prophage_orfs, recovered_prophage_orfs
+    _rescued_table_md = "\n".join(
+        [
+            "| Prophage | Locus Tag | Gene | Coordinates (0-based) | Length | Operon Overlap | Product |",
+            "| :--- | :--- | :--- | :--- | ---: | :--- | :--- |",
+            _rec_md,
+        ]
+    )
+
+    mo.vstack(
+        [
+            mo.md("## 4. Benchmark Summary & Newly Rescued Prophage ORFs"),
+            mo.ui.tabs(
+                {
+                    "Per-Region Recall Summary": mo.md(_summary_table_md),
+                    f"Newly Rescued Prophage ORFs ({len(recovered_prophage_orfs)})": mo.md(_rescued_table_md),
+                }
+            ),
+        ],
+        gap=0.8,
+    )
+    return
+
+
+if __name__ == "__main__":
+    app.run()

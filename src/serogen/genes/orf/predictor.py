@@ -4,16 +4,15 @@ import numpy as np
 
 from serogen.core.genome import GenomeAssembly
 from serogen.core.interval import Intervals
-from serogen.core.seq import Alphabet, GeneticCode, Sequence, Sequences
+from serogen.core.seq.alphabet import Alphabet, GeneticCode
+from serogen.core.seq.seq import Sequence, Sequences
+from serogen.genes.models import HMM, Genes, Indels, get_hmm_model
 
 from .extract import (
     _build_window_table,
     _decode_and_count_windows,
-    _extract_genes,
     _write_windows_parallel,
 )
-from .models import HMM, Genes, Indels, get_hmm_model
-from .viterbi import _build_local_cg_bins, _viterbi_backtrack, _viterbi_forward
 
 
 class OrfPredictor:
@@ -47,7 +46,7 @@ class OrfPredictor:
         min_gene_len: int | None = None,
         local_gc_window: int = 4_000,
     ) -> None:
-        r"""Initialize an [`OrfPredictor`][serogen.genes.predictor.OrfPredictor] instance.
+        r"""Initialize an [`OrfPredictor`][serogen.genes.orf.predictor.OrfPredictor] instance.
 
         Args:
             whole_genome (bool): If True, enables whole genome gene finder mode. Defaults to False.
@@ -80,73 +79,6 @@ class OrfPredictor:
             self.min_gene_len = (90 if include_phage else 120) if whole_genome else 60
         self.local_gc_window = int(local_gc_window)
 
-    def _predict_single_chunk(
-        self,
-        raw_arr: np.ndarray,  # type: ignore[type-arg]
-    ) -> tuple[list[int], list[int], list[int], list[np.ndarray], list[np.ndarray], list[np.ndarray]]:  # type: ignore[type-arg]
-        min_len = self.min_gene_len if self.whole_genome else min(self.min_gene_len, 60)
-        if len(raw_arr) < min_len:
-            return [], [], [], [], [], []
-
-        encoded = Alphabet.DNA.encode(raw_arr)
-        c_count = np.sum((encoded == 1) | (encoded == 2))
-        cg_pct = (int(c_count) * 100) // len(encoded)
-        cg_bin = min(43, max(0, cg_pct - 26))
-        cg_bins = _build_local_cg_bins(encoded, cg_bin, self.local_gc_window if self.include_phage else 0)
-
-        m = self.model
-        gc = self.genetic_code
-        best_st, path = _viterbi_forward(
-            encoded,
-            cg_bins,
-            self.whole_genome,
-            self.include_phage,
-            m.tr,
-            m.tr_mi,
-            m.tr_ii,
-            m.pi,
-            m.tr_rr,
-            m.e_match,
-            m.tr_start,
-            m.tr_stop,
-            m.dist_start,
-            m.dist_stop,
-            gc.start_mask_64,
-            gc.stop_mask_64,
-            gc.rev_start_mask_64,
-            gc.rev_stop_mask_64,
-            gc.start_log_priors_64,
-            gc.rev_start_log_priors_64,
-            gc.stop_log_priors_64,
-            gc.rev_stop_log_priors_64,
-        )
-        vpath = _viterbi_backtrack(best_st, path)
-
-        return _extract_genes(
-            raw_arr,
-            encoded,
-            vpath,
-            cg_bins,
-            self.whole_genome,
-            self.include_phage,
-            self.min_gene_len,
-            m.e_match,
-            m.tr_rr,
-            m.tr_start,
-            m.tr_stop,
-            m.dist_start,
-            m.dist_stop,
-            gc.start_mask_64,
-            gc.stop_mask_64,
-            gc.rev_start_mask_64,
-            gc.rev_stop_mask_64,
-            gc.start_log_priors_64,
-            gc.rev_start_log_priors_64,
-            gc.stop_log_priors_64,
-            gc.rev_stop_log_priors_64,
-            Alphabet.DNA.complement_lut,
-        )
-
     def _predict_flat_batch(
         self,
         flat_seqs: np.ndarray,  # type: ignore[type-arg]
@@ -159,17 +91,7 @@ class OrfPredictor:
             return Genes.empty()
 
         min_contig_len = self.min_gene_len if self.whole_genome else min(self.min_gene_len, 60)
-        (
-            win_contig_idx,
-            win_buf_starts,
-            win_buf_ends,
-            win_c_starts,
-            win_left_cutoffs,
-            win_right_cutoffs,
-            win_is_left_edge,
-            win_is_right_edge,
-            win_vp_offsets,
-        ) = _build_window_table(
+        win_table = _build_window_table(
             contig_offsets,
             contig_lengths,
             self.window_size,
@@ -177,7 +99,7 @@ class OrfPredictor:
             min_contig_len,
         )
 
-        n_windows = len(win_contig_idx)
+        n_windows = len(win_table[0])
         if n_windows == 0:
             return Genes.empty()
 
@@ -185,37 +107,10 @@ class OrfPredictor:
         gc = self.genetic_code
         encode_lut = Alphabet.DNA.kmer_lut
         lut_rc = Alphabet.DNA.complement_lut
-
-        (
-            encoded_flat,
-            vpath_flat,
-            cg_bins_flat,
-            win_gene_counts,
-            win_cds_bytes,
-            win_indel_counts,
-        ) = _decode_and_count_windows(
-            flat_seqs,
-            encode_lut,
-            lut_rc,
-            win_contig_idx,
-            win_buf_starts,
-            win_buf_ends,
-            win_c_starts,
-            win_left_cutoffs,
-            win_right_cutoffs,
-            win_is_left_edge,
-            win_is_right_edge,
-            win_vp_offsets,
-            self.whole_genome,
-            self.include_phage,
-            self.min_gene_len,
-            self.local_gc_window,
-            m.tr,
-            m.tr_mi,
-            m.tr_ii,
-            m.pi,
-            m.tr_rr,
+        viterbi_params = (m.tr, m.tr_mi, m.tr_ii, m.pi)
+        score_params = (
             m.e_match,
+            m.tr_rr,
             m.tr_start,
             m.tr_stop,
             m.dist_start,
@@ -228,6 +123,26 @@ class OrfPredictor:
             gc.rev_start_log_priors_64,
             gc.stop_log_priors_64,
             gc.rev_stop_log_priors_64,
+        )
+
+        (
+            encoded_flat,
+            vpath_flat,
+            cg_bins_flat,
+            win_gene_counts,
+            win_cds_bytes,
+            win_indel_counts,
+        ) = _decode_and_count_windows(
+            flat_seqs,
+            encode_lut,
+            lut_rc,
+            win_table,
+            self.whole_genome,
+            self.include_phage,
+            self.min_gene_len,
+            self.local_gc_window,
+            viterbi_params,
+            score_params,
         )
 
         total_genes = int(np.sum(win_gene_counts))
@@ -260,42 +175,8 @@ class OrfPredictor:
         out_indel_offsets = np.empty(total_genes, dtype=np.int32)
         out_indel_lengths = np.empty(total_genes, dtype=np.int32)
 
-        _write_windows_parallel(
-            flat_seqs,
-            encoded_flat,
-            vpath_flat,
-            cg_bins_flat,
-            lut_rc,
-            win_contig_idx,
-            win_buf_starts,
-            win_buf_ends,
-            win_c_starts,
-            win_left_cutoffs,
-            win_right_cutoffs,
-            win_is_left_edge,
-            win_is_right_edge,
-            win_vp_offsets,
-            win_gene_offsets,
-            win_gene_counts,
-            win_cds_offsets,
-            win_indel_offsets,
-            self.whole_genome,
-            self.include_phage,
-            self.min_gene_len,
-            m.e_match,
-            m.tr_rr,
-            m.tr_start,
-            m.tr_stop,
-            m.dist_start,
-            m.dist_stop,
-            gc.start_mask_64,
-            gc.stop_mask_64,
-            gc.rev_start_mask_64,
-            gc.rev_stop_mask_64,
-            gc.start_log_priors_64,
-            gc.rev_start_log_priors_64,
-            gc.stop_log_priors_64,
-            gc.rev_stop_log_priors_64,
+        win_offsets = (win_gene_offsets, win_gene_counts, win_cds_offsets, win_indel_offsets)
+        out_bufs = (
             out_starts,
             out_ends,
             out_strands,
@@ -308,6 +189,21 @@ class OrfPredictor:
             out_indel_kinds,
             out_indel_offsets,
             out_indel_lengths,
+        )
+
+        _write_windows_parallel(
+            flat_seqs,
+            encoded_flat,
+            vpath_flat,
+            cg_bins_flat,
+            lut_rc,
+            win_table,
+            win_offsets,
+            self.whole_genome,
+            self.include_phage,
+            self.min_gene_len,
+            score_params,
+            out_bufs,
         )
 
         ids_arr = np.arange(total_genes).astype("S")
