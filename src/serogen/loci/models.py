@@ -339,6 +339,11 @@ class Locus(GraphModel):
         return bool(np.any((roles == int(GeneRole.TRANSPOSASE)) | (roles == int(GeneRole.INTEGRASE))))
 
     @property
+    def has_mge(self) -> bool:
+        """Alias for `has_mobile_elements`."""
+        return self.has_mobile_elements
+
+    @property
     def is_fragmented(self) -> bool:
         """True if this locus spans multiple contigs across an assembly break."""
         if any(e.edge_type.is_contig_break for e in self.edges):
@@ -759,13 +764,19 @@ class Loci(GraphBatch[Locus, "Loci"]):
         return np.where(counts > 0.0, fs / np.maximum(counts, 1.0), np.float32(0.0)).astype(np.float32)
 
     @property
+    def has_mge(self) -> np.ndarray[tuple[int], np.dtype[np.bool_]]:
+        """1D boolean array (`(N,)`) indicating whether each locus contains `TRANSPOSASE` or `INTEGRASE` insertions."""
+        if len(self) == 0:
+            return np.empty(0, dtype=np.bool_)
+        return np.array([loc.has_mobile_elements for loc in self], dtype=np.bool_)
+
+    @property
     def is_intact(self) -> np.ndarray[tuple[int], np.dtype[np.bool_]]:
         """1D boolean array (`(N,)`) indicating whether each locus is single-contig, MGE-free, and frameshift-free."""
         n_loci = len(self)
         if n_loci == 0:
             return np.empty(0, dtype=np.bool_)
-        no_mge = np.array([not loc.has_mobile_elements for loc in self], dtype=np.bool_)
-        return (~self.is_fragmented) & no_mge & (self.num_frameshifts == 0)
+        return (~self.is_fragmented) & (~self.has_mge) & (self.num_frameshifts == 0)
 
     @property
     def categories(self) -> np.ndarray[tuple[int], np.dtype[np.str_]]:
