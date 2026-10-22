@@ -2,7 +2,7 @@
 
 # 🧬 SeroGen
 
-**High-performance genomic analysis, de novo polysaccharide locus segmentation, and *in silico* serotyping.**
+**De novo bacterial polysaccharide antigen locus discovery, twilight-zone CNN gene role classification, hybrid MCL orthogroup clustering, and graph-based pan-locus analysis.**
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SeroVerse/serogen/ci.yml?branch=main&label=CI&logo=github)](https://github.com/SeroVerse/serogen/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/github/actions/workflow/status/SeroVerse/serogen/docs.yml?branch=main&label=Docs&logo=readthedocs)](https://SeroVerse.github.io/serogen/)
@@ -19,14 +19,15 @@
 
 ## Overview
 
-**SeroGen** is the core genomic engine of the **SeroVerse** suite. Built from the ground up on zero-copy Structure-of-Arrays (SoA) containers (`numpy`) and SIMD-parallel JIT kernels (`numba`), SeroGen transforms raw bacterial or prophage genome assemblies into annotated polysaccharide synthesis loci and high-precision serotype calls in tens of milliseconds — **with zero external CLI dependencies**.
+**SeroGen** is the core genomic engine of the **SeroVerse** suite. Built from the ground up on zero-copy Structure-of-Arrays (SoA) containers (`numpy`) and SIMD-parallel JIT kernels (`numba`), SeroGen transforms raw bacterial or prophage genome assemblies into annotated polysaccharide synthesis loci, orthogroup pan-graphs, and de novo reference databases in tens of milliseconds — **with zero external CLI dependencies**.
 
-### Key Highlights
+### Core Capabilities
 
-- ⚡ **Single-Pass Bacterial & Prophage ORF Calling (`OrfPredictor`)**: Decodes a 4.66 Mb *E. coli* chromosome in **`~70 ms` (>65 Mb/s)** via a 21-state frameshift-aware profile-HMM Viterbi decoder with Shine-Dalgarno RBS scoring and single-pass viral/prophage gap rescue (`GeneticCode.bacterial` + `GeneticCode.viral`).
-- 🧠 **Multi-Scale 1D CNN Role Classification (`GeneRoleClassifier`)**: Classifies translated proteins across **36 biosynthetic, regulatory, transport, and MGE roles** and extracts multi-scale convolutional embeddings in pure NumPy/Numba.
-- 🧩 **Exact ACP-DP Locus Segmentation (`LocusSegmenter`)**: Partitions chromosomes into capsule (`CPS`), O-antigen (`O_AG`), wall teichoic acid (`WTA`), and ectopic synthase islands using All-Contiguous-Partitions Dynamic Programming and cross-contig boundary stitching.
-- 🔍 **Randstrobe + Banded Gotoh + Bipartite Graph Matching (`LocusMatcher`)**: Combines `RandstrobeIndex` k-mer seeding, parallel banded Smith-Waterman-Gotoh (`PairwiseAligner`), MCL/Leiden orthogroup clustering (`Clusterer`), and Hungarian bipartite synteny alignment (`GraphAligner`).
+- ⚡ **Single-Pass 29-State Bacterial & Prophage ORF Calling (`OrfPredictor`)**: Decodes a 4.66 Mb *E. coli* chromosome in **`~71 ms` (>65 Mb/s)** via a 29-state frameshift- and operon-overlap-aware (`TGATG`/`ATGA`) profile-HMM Viterbi decoder with sliding 4-kb local GC adaptation, Shine-Dalgarno RBS scoring, and single-pass viral/prophage gap rescue (`include_phage=True`).
+- 🧠 **Polysaccharide-Specific 1D-CNN Role Classification (`GeneRoleClassifier`)**: Beats remote homology detection (`BLAST`/`MMseqs2`) in the `< 25%` sequence identity twilight zone by combining multi-scale 1D convolutional motif filters (`kernels=(3, 5, 9)`) with a 20-D biophysical composition/hydropathy/charge head across **29 functional `GeneRole`s** (+ open-set `UNKNOWN`).
+- 🔬 **Smart Hybrid Clustering & CNN-Rescued MCL (`Clusterer`)**: Combines `FNV-1a` exact deduplication, `RandstrobeIndex` strobemer seeding, `MMSEQS12` reduced-alphabet $12^4$ CSR + ungapped BLOSUM62 diagonal prefiltering, SIMD-parallel Smith-Waterman-Gotoh (`PairwiseAligner`), **role-gated CNN active-site motif rescue** (`conv_max`), and sparse Markov Clustering (`mode="mcl"`) or greedy `CD-HIT` (`mode="cdhit"`).
+- 🕸️ **Zero-Copy Graph Data Structures & Solvers (`serogen.core.graph`)**: Bit-packed 32-bit `IntNode`s (`GeneNode`, `IntergenicEdge`), `GraphBatch` (`Loci`) containers with `.as_pan_graph()` consensus compression, Weisfeiler-Lehman + Hungarian `GraphAligner`, Chu-Liu/Edmonds + constrained $K$-best `maximum_spanning_arborescence`, and Numba `RelationalMPNN`.
+- 🧩 **De Novo Fragmented & MGE-Tolerant Locus Discovery (`LocusPredictor` & `LocusMatcher`)**: Segments `CPS`, `O_AG`, `WTA`, `LTA`, `EPS`, `LOS_CORE`, and `PGA` loci *de novo* using All-Contiguous-Partitions Dynamic Programming (`LocusSegmenter`), bridges/heals `IS` transposase/integrase insertions (`heal_mobile_elements=True`), stitches fragmented loci split across draft contigs (`stitch_contig_splits=True`), and builds de novo searchable databases (`LocusMatcher`).
 
 ---
 
@@ -43,23 +44,31 @@ pip install serogen
 ## Quickstart
 
 ```python
-from serogen import GenomeAssembly, LocusDatabase, LocusMatcher, LocusPredictor
+from serogen.core.genome import GenomeAssembly
+from serogen.loci.matcher import LocusMatcher
+from serogen.loci.models import GeneNode, Loci
+from serogen.loci.predictor import LocusPredictor
 
-# 1. Load a genome assembly and predict biosynthetic loci de novo
+# 1. Load a genome assembly and discover polysaccharide loci de novo
 assembly = GenomeAssembly.from_fasta("genome.fasta")
-predictor = LocusPredictor()
+predictor = LocusPredictor(stitch_contig_splits=True, heal_mobile_elements=False)
 loci = predictor.predict(assembly)
 
 for locus in loci:
-    print(f"{locus.archetype.name}: {locus.start}..{locus.end} ({len(locus.genes)} genes)")
+    print(
+        f"{locus.archetype.name}: {locus.start}..{locus.end} "
+        f"({locus.num_genes} genes, completeness={locus.completeness:.2f})"
+    )
 
-# 2. Match predicted loci against a compiled SeroGen reference database
-db = LocusDatabase.load("spneumo_cps.npz")
-matcher = LocusMatcher.from_database(db)
+# 2. Build a de novo MCL-clustered locus database and consensus pan-locus graph
+db_loci = Loci.from_list(reference_loci).canonicalize_strands()
+matcher = LocusMatcher(db_loci, cluster_mode="mcl", min_identity=80.0, min_coverage=0.80)
+pan_adj, pan_nodes, pan_counts = matcher.targets.as_pan_graph(node_mask=GeneNode.mask("ROLE_ID", "CLUSTER_ID"))
+
+# 3. Match newly discovered loci and inspect structural variant bitflags
 matches = matcher.match(loci)
-
 best = matches[0]
-print(f"Serotype: {best.serotype} (score={best.score:.3f}, AA identity={best.mean_aa_identity:.1%})")
+print(f"Matched locus: {best.target_name} (score={best.score:.3f}, flags={best.match_type!r})")
 ```
 
 ---

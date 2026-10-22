@@ -1,3 +1,15 @@
+---
+title: API Reference
+subtitle: Public Modules & Classes
+description: Complete API reference for SeroGen's Structure-of-Arrays core (serogen.core), ORF and CNN gene engines (serogen.genes), and de novo locus discovery (serogen.loci).
+author: Tom Stanton
+icon: lucide/book-open
+comments: true
+tags:
+  - api
+  - reference
+---
+
 # API Reference
 
 The **SeroGen** API is organized into three modules:

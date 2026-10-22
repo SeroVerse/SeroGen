@@ -1,34 +1,47 @@
+---
+title: Benchmarks & Notebooks
+subtitle: Interactive 16:9 Marimo Slide Decks
+description: Reproducible Marimo notebooks and interactive 16:9 slide decks benchmarking single-pass bacterial & prophage ORF calling, 1D-CNN gene role classification, and S. pneumoniae de novo CPS database construction.
+author: Tom Stanton
+icon: lucide/presentation
+comments: true
+tags:
+  - benchmarks
+  - marimo
+  - notebooks
+---
+
 # Benchmarks & Interactive Slide Decks
 
-SeroGen maintains reproducible [Marimo](https://marimo.io) notebooks in [`scripts/`](https://github.com/SeroVerse/serogen/tree/main/scripts) covering every stage of the pipeline: single-pass prophage & bacterial ORF prediction, deep CNN functional gene role training, and whole-database polysaccharide locus matching.
+SeroGen maintains reproducible [Marimo](https://marimo.io) notebooks in [`scripts/`](https://github.com/SeroVerse/serogen/tree/main/scripts) covering every stage of the pipeline: single-pass bacterial & prophage ORF prediction, polysaccharide-specific 1D-CNN gene role training and layer sweeping, and de novo capsular polysaccharide (CPS) locus discovery, hybrid MCL clustering, and pan-locus database construction.
 
 Each notebook is configured with a native **16:9 Marimo slide layout** (`scripts/layouts/*.slides.json`) and a cached session snapshot (`scripts/__marimo__/session/*.py.json`) that exports directly into the interactive slide decks embedded in this section.
 
 <div class="grid cards" markdown>
 
--   :lucide-dna:{ .lg .middle } **Prophage & Bacterial ORF Benchmark**
+-   :lucide-dna:{ .lg .middle } **Single-Pass Bacterial & Prophage ORF Benchmark**
 
     ---
 
-    Head-to-head evaluation of `OrfPredictor` against standard bacterial ORF calling across complete *Klebsiella pneumoniae* chromosomes (`HS11286`, `NTUH-K2044`) and integrated prophage islands (`99.7%` whole-chromosome 3'-stop recall, `95.3%` prophage recall).
+    Evaluates [`OrfPredictor`][serogen.genes.orf.predictor.OrfPredictor] on *Escherichia coli* K-12 MG1655 (`CP014225.1`, `4.66 Mb`) and its 9 embedded cryptic/lambdoid prophages, demonstrating how 29-state frameshift/overlap decoding and sliding 4-kb GC adaptation recover `95.6%` of prophage 3'-stops (`+17` rescued ORFs) and `99.1%` of host CDSs in a single pass at `>60 Mb/s`.
 
     [:octicons-arrow-right-24: Explore ORF Benchmark](prophage-orfs.md)
 
--   :lucide-brain-circuit:{ .lg .middle } **CNN Functional Gene Role Classifier**
+-   :lucide-brain-circuit:{ .lg .middle } **Polysaccharide-Specific CNN Gene Role Classifier**
 
     ---
 
-    Multi-source reference curation (`3,996` non-redundant proteins), 20-trial Optuna TPE hyperparameter optimization, 9-layer representation sweep, and held-out validation (`90.23%` accuracy / `90.19%` Macro F1) across all 29 functional `GeneRole`s (`src/serogen/data/model.npz`).
+    Multi-source reference curation (`UniProtKB`, `UniRef50`, `NCBI IPG`, `KEGG`), Optuna TPE hyperparameter optimization, Numba-parallel 8-layer representation sweep, and held-out validation (`>90%` accuracy & Macro F1) across all 29 functional [`GeneRole`][serogen.genes.roles.GeneRole]s (`src/serogen/data/model.npz`), beating remote homology in the `< 25%` identity twilight zone.
 
     [:octicons-arrow-right-24: Explore Classifier Deck](gene-classifier.md)
 
--   :lucide-network:{ .lg .middle } **S. pneumoniae CPS Locus Serotyping**
+-   :lucide-network:{ .lg .middle } **S. pneumoniae De Novo CPS Locus Discovery & Database**
 
     ---
 
-    4-stage validation of MCL homology clustering, Fruchterman-Reingold pan-locus synteny layout (`LayoutEngine`), whole-genome serotyping (`100%` Top-1 accuracy), contig-split stitching (`FRAGMENTED_VARIANT`), and leave-one-out novelty detection.
+    4-stage validation of de novo CPS locus discovery ([`LocusPredictor`][serogen.loci.predictor.LocusPredictor]), hybrid CNN-rescued MCL orthogroup clustering ([`Clusterer`][serogen.core.seq.clustering.Clusterer]), directed pan-locus graph construction ([`Loci.as_pan_graph`][serogen.core.graph.models.GraphBatch.as_pan_graph]), contig-split stitching (`100%` recovery across intergenic & mid-ORF breaks), and leave-one-out novelty detection ([`LocusMatcher`][serogen.loci.matcher.LocusMatcher]).
 
-    [:octicons-arrow-right-24: Explore CPS Serotyping Deck](spneumo-serotyping.md)
+    [:octicons-arrow-right-24: Explore De Novo CPS Database Deck](spneumo-serotyping.md)
 
 </div>
 

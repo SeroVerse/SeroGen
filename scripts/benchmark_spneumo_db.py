@@ -15,14 +15,14 @@
 # serogen = { path = "..", editable = true }
 # ///
 
-"""Marimo slide deck & benchmark for S. pneumoniae cps reference database construction and whole-genome serotyping."""
+"""Marimo slide deck & benchmark for de novo S. pneumoniae CPS locus discovery, hybrid MCL clustering, pan-locus graph construction, and database matching."""
 
 import marimo
 
 __generated_with = "0.25.1"
 app = marimo.App(
     width="full",
-    app_title="SeroGen — S. pneumoniae Serotype Reference Database & Whole-Genome Benchmark",
+    app_title="SeroGen — De Novo S. pneumoniae CPS Locus Discovery & Pan-Locus Database Benchmark",
     layout_file="layouts/benchmark_spneumo_db.slides.json",
 )
 
@@ -837,7 +837,7 @@ def _(
         .properties(
             width=360,
             height=320,
-            title="Stage 2: Whole-Genome Top-1 vs Runner-Up Separation",
+            title="Stage 2: De Novo Whole-Genome Locus Discovery & DB Matching",
         )
     )
 
@@ -1098,7 +1098,7 @@ def _(
         .properties(
             width=820,
             height=380,
-            title="S. pneumoniae Consensus Pan-K-Locus Synteny Network (Fruchterman-Reingold LayoutEngine)",
+            title="S. pneumoniae De Novo Consensus Pan-CPS Graph (Loci.as_pan_graph)",
         )
         .configure_view(stroke=None)
     )
@@ -1159,17 +1159,17 @@ def _(
         [
             mo.md(
                 """
-                # *Streptococcus pneumoniae* Capsular Reference Database & Whole-Genome Serotyping
-                End-to-end validation of **HTTP/2 sequence fetching (`httpx2` + `cassetter`)**, **MCL homology clustering (`Loci.cluster_genes`)**,
-                **consensus pan-locus graph layout (`LayoutEngine`)**, **whole-genome serotyping (`LocusPredictor` + `LocusMatcher`)**,
-                and **contig-split stitching (`FRAGMENTED_VARIANT`)**.
+                # *Streptococcus pneumoniae* De Novo CPS Locus Discovery & Database Construction
+                End-to-end validation of **de novo polysaccharide locus segmentation (`LocusPredictor`)**, **polysaccharide-specific CNN role classification (`GeneRoleClassifier`)**,
+                **hybrid CNN-rescued MCL clustering (`Clusterer` / `Loci.cluster_genes`)**, **directed pan-locus graph construction (`Loci.as_pan_graph`)**,
+                **cross-contig boundary stitching (`stitch_contig_splits=True`)**, and **database matching (`LocusMatcher`)**.
                 """
             ),
             mo.hstack(
                 [
                     mo.stat(
-                        label="Reference CPS Database",
-                        value=f"{n_db_loci} Serotypes",
+                        label="De Novo CPS Database",
+                        value=f"{n_db_loci} Loci",
                         caption=f"{total_db_genes} genes → {unique_clusters} MCL clusters ({compression_ratio:.2f}× compression)",
                         bordered=True,
                     ),
@@ -1180,7 +1180,7 @@ def _(
                         bordered=True,
                     ),
                     mo.stat(
-                        label="Whole-Genome Serotyping",
+                        label="De Novo WGS Locus Discovery",
                         value=f"{wgs_accuracy_pct:.1f}%",
                         caption=f"{wgs_correct_count}/{wgs_total_count} closed chromosomes (incl. R6 rough control)",
                         bordered=True,
@@ -1194,7 +1194,7 @@ def _(
                     mo.stat(
                         label="Leave-One-Out Novelty",
                         value=f"{loo_accuracy_pct:.1f}%",
-                        caption=f"{loo_novel_count}/{len(loo_records)} held-out serotypes flagged (`is_novel`)",
+                        caption=f"{loo_novel_count}/{len(loo_records)} held-out loci flagged (`is_novel`)",
                         bordered=True,
                     ),
                 ],
@@ -1203,9 +1203,9 @@ def _(
             ),
             mo.callout(
                 mo.md(
-                    "**4-Stage Validation Summary**: `LocusPredictor` + `LocusMatcher` achieve **100% Top-1 serotyping accuracy** across complete "
-                    "*S. pneumoniae* chromosomes (both Wzy-dependent `CPS_WZY` and synthase-dependent `CPS_SYNTHASE` Type 3 capsules), "
-                    "**100% specificity** on unencapsulated `R6`, and **100% recovery** across artificial intergenic and mid-ORF contig breaks."
+                    "**4-Stage Validation Summary**: `LocusPredictor` discovers capsular polysaccharide loci *de novo* directly from unannotated genomes "
+                    "(both Wzy-dependent `CPS_WZY` and synthase-dependent `CPS_SYNTHASE` Type 3 capsules) with **100% specificity** on unencapsulated `R6`, "
+                    "**100% recovery** across artificial intergenic and mid-ORF contig breaks, and **100% Top-1 database matching** via `LocusMatcher`."
                 ),
                 kind="success",
             ),
@@ -1217,14 +1217,14 @@ def _(
 
 @app.cell
 def _(chart_pan_graph, mo):
-    # Slide 2: Consensus Pan-K-Locus Synteny Network (LayoutEngine)
+    # Slide 2: De Novo Consensus Pan-CPS Graph (Loci.as_pan_graph)
     mo.vstack(
         [
             mo.md(
                 """
-                ## 1. Consensus Pan-CPS Synteny Network (`Loci.as_pan_graph` + `LayoutEngine`)
-                Conserved 5' regulatory/initiation genes (`wzg`/`cpsA`, `wzh`/`cpsB`, `wzd`/`cpsC`, `wze`/`cpsD`) form a high-occupancy hub
-                that branches into serotype-specific glycosyltransferases (`GT`), flippases (`wzx`), polymerases (`wzy`), and sugar biosynthesis cassettes.
+                ## 1. De Novo Consensus Pan-CPS Graph (`Loci.cluster_genes` + `Loci.as_pan_graph`)
+                Hybrid `Clusterer(mode="mcl")` groups divergent homologs by combining `RandstrobeIndex` seeding, `MMSEQS12` diagonal prefiltering,
+                banded/unbanded Smith-Waterman-Gotoh, and role-gated `GeneRoleClassifier` active-site motif rescue, compressing bit-packed `GeneNode`s into a directed pan-locus CSR graph.
                 """
             ),
             chart_pan_graph,
@@ -1236,14 +1236,14 @@ def _(chart_pan_graph, mo):
 
 @app.cell
 def _(alt, chart_ava, chart_wgs, mo):
-    # Slide 3: Stage 1 Reference All-vs-All Matrix & Stage 2 Whole-Genome Serotyping
+    # Slide 3: Stage 1 De Novo Database All-vs-All Matrix & Stage 2 De Novo Whole-Genome Locus Discovery
     mo.vstack(
         [
             mo.md(
                 """
-                ## 2. Reference All-vs-All Similarity & Whole-Genome Serotyping
-                Left: Pairwise `LocusMatcher` similarity matrix across the 18-serotype reference panel (highlighting cross-reacting serogroups `6A/6B/6C/6D`, `19A/19F`, and `23A/23B/23F`).
-                Right: Top-1 vs. Top-2 runner-up score separation on complete RefSeq chromosomes.
+                ## 2. De Novo Database All-vs-All Similarity & Whole-Genome CPS Discovery
+                Left: Pairwise `LocusMatcher` similarity matrix across the 18 de novo-segmented reference CPS loci (resolving closely related serogroups `6A/6B/6C/6D`, `19A/19F`, and `23A/23B/23F`).
+                Right: Top-1 vs. Top-2 runner-up score separation for CPS loci discovered *de novo* from complete RefSeq chromosomes.
                 """
             ),
             alt.hconcat(chart_ava, chart_wgs).resolve_scale(color="independent"),
@@ -1260,9 +1260,9 @@ def _(alt, chart_frag, chart_loo, mo):
         [
             mo.md(
                 """
-                ## 3. Contig-Split Stitching & Leave-One-Out Novelty Detection
-                Left: `LocusPredictor(stitch_contig_splits=True)` reconstructs *cps* operons split across reverse-complemented contigs (both intergenic and mid-ORF breaks).
-                Right: Holding out each query strain's true serotype from the reference database triggers `Match.is_novel` (`GENE_VARIANT`) and falls back to the closest intra-serogroup relative.
+                ## 3. Fragmented Locus Stitching & Leave-One-Out Novelty Detection
+                Left: `LocusPredictor(stitch_contig_splits=True)` reconstructs fragmented *cps* operons split across reverse-complemented contigs (both intergenic and mid-ORF breaks).
+                Right: Holding out each query strain's true locus from the de novo database triggers `Match.is_novel` (`GENE_VARIANT`) and falls back to the closest intra-serogroup relative.
                 """
             ),
             alt.hconcat(chart_frag, chart_loo).resolve_scale(color="independent"),
@@ -1314,28 +1314,28 @@ def _(frag_records, loo_records, mo, pneumo_db, top_pan_rows, wgs_records):
 
     _wgs_table_md = "\n".join(
         [
-            "| Strain | Accession | Genome Size | True | Predicted | Runner-Up | Archetype | Genes | Top-1 Score | Jaccard | Match Flags | Status |",
+            "| Strain | Accession | Genome Size | True | Matched Locus | Runner-Up | Archetype | Genes | Top-1 Score | Jaccard | Match Flags | Status |",
             "| :--- | :--- | ---: | :--- | :--- | :--- | :--- | ---: | ---: | ---: | :--- | :--- |",
             _wgs_md,
         ]
     )
     _frag_table_md = "\n".join(
         [
-            "| Strain | True Serotype | Assembly Condition | Predicted | Score | Jaccard | Completeness | Contigs | Fragmented Flag | Status |",
+            "| Strain | True Locus | Assembly Condition | Matched Locus | Score | Jaccard | Completeness | Contigs | Fragmented Flag | Status |",
             "| :--- | :--- | :--- | :--- | ---: | ---: | ---: | ---: | :--- | :--- |",
             _frag_md,
         ]
     )
     _loo_table_md = "\n".join(
         [
-            "| Strain | Held-Out Serotype | Serogroup | Full-DB Score | Closest Relative | LOO Score (Drop) | LOO Jaccard | Missing / Extra | Flags | Novelty |",
+            "| Strain | Held-Out Locus | Serogroup | Full-DB Score | Closest Relative | LOO Score (Drop) | LOO Jaccard | Missing / Extra | Flags | Novelty |",
             "| :--- | :--- | :--- | ---: | :--- | ---: | ---: | :--- | :--- | :--- |",
             _loo_md,
         ]
     )
     _db_table_md = "\n".join(
         [
-            "| # | Serotype | Serogroup | Accession | Strain | Archetype | Genes | Interval | Completeness | Score |",
+            "| # | Locus | Serogroup | Accession | Strain | Archetype | Genes | Interval | Completeness | Score |",
             "| ---: | :--- | :--- | :--- | :--- | :--- | ---: | :--- | ---: | ---: |",
             _db_md,
             "",
@@ -1348,13 +1348,13 @@ def _(frag_records, loo_records, mo, pneumo_db, top_pan_rows, wgs_records):
 
     mo.vstack(
         [
-            mo.md("## 4. Detailed Benchmark Results & Reference Registry"),
+            mo.md("## 4. Detailed Benchmark Results & De Novo Database Registry"),
             mo.ui.tabs(
                 {
-                    "Stage 2: Whole-Genome Serotyping": mo.md(_wgs_table_md),
+                    "Stage 2: De Novo WGS Locus Discovery": mo.md(_wgs_table_md),
                     "Stage 3: Contig-Split Stress Test": mo.md(_frag_table_md),
                     "Stage 4: Leave-One-Out Novelty": mo.md(_loo_table_md),
-                    "Stage 1: Reference CPS Registry & Core Clusters": mo.md(_db_table_md),
+                    "Stage 1: De Novo CPS Registry & Core Clusters": mo.md(_db_table_md),
                 }
             ),
         ],

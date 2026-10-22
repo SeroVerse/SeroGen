@@ -18,13 +18,18 @@ nav = [
     { "Overview" = "notebooks/index.md" },
     { "Prophage & Bacterial ORFs" = "notebooks/prophage-orfs.md" },
     { "CNN Gene Role Classifier" = "notebooks/gene-classifier.md" },
-    { "S. pneumoniae CPS Serotyping" = "notebooks/spneumo-serotyping.md" },
+    { "S. pneumoniae De Novo CPS Database" = "notebooks/spneumo-serotyping.md" },
   ] },
   { "API Reference" = [
     { "Overview" = "reference/index.md" },
     { "serogen.core" = "reference/core.md" },
     { "serogen.genes" = "reference/genes.md" },
     { "serogen.loci" = "reference/loci.md" },
+  ] },
+  { "Community" = [
+    "conduct.md",
+    "contributing.md",
+    "releases.md",
   ] },
 ]
 
@@ -93,7 +98,14 @@ icon = "fontawesome/brands/github"
 link = "https://github.com/SeroVerse/serogen"
 name = "SeroVerse/serogen on GitHub"
 
+[project.extra.status]
+new = "Recently added"
+deprecated = "Deprecated"
+
 [project.plugins.search]
+enabled = true
+
+[project.plugins.tags]
 enabled = true
 
 [project.plugins.autorefs]
@@ -107,24 +119,29 @@ enabled = true
 
 [project.plugins.llmstxt]
 enabled = true
-markdown_description = "SeroGen: High-performance genomic analysis, single-pass bacterial & prophage ORF prediction, deep CNN functional role classification, exact ACP-DP locus segmentation, and bipartite graph alignment for in silico serotyping."
+markdown_description = "SeroGen: High-performance genomic analysis, single-pass bacterial & prophage ORF prediction, polysaccharide-specific 1D-CNN gene role classification, hybrid CNN-rescued MCL clustering, graph-based data structures, and de novo polysaccharide locus discovery."
 full_output = "llms-full.txt"
 
 [project.plugins.llmstxt.sections]
 "Overview & Architecture" = [
   { "index.md" = "Getting started, quickstart, and performance benchmarks" },
-  { "architecture.md" = "Structure-of-Arrays (SoA) core, single-pass HMM-Viterbi ORF caller, CNN role classifier, and ACP-DP locus segmentation" },
+  { "architecture.md" = "Structure-of-Arrays (SoA) core, single-pass HMM-Viterbi ORF caller, polysaccharide-specific CNN role classifier, hybrid MCL clustering, graph data structures/GNN/arborescence, and de novo ACP-DP locus discovery" },
 ]
 "Benchmarks & Notebooks" = [
   { "notebooks/index.md" = "Interactive Marimo benchmark notebooks and 16:9 slide decks" },
-  { "notebooks/prophage-orfs.md" = "Prophage and bacterial ORF prediction benchmark across 10 phages and E. coli K-12" },
-  { "notebooks/gene-classifier.md" = "Multi-scale 1D CNN + BiGRU functional gene role classifier benchmark" },
-  { "notebooks/spneumo-serotyping.md" = "S. pneumoniae 98-serotype CPS locus matching and synteny layout benchmark" },
+  { "notebooks/prophage-orfs.md" = "Single-pass bacterial and prophage ORF prediction benchmark on E. coli K-12 MG1655 (CP014225.1) and 9 embedded prophage islands" },
+  { "notebooks/gene-classifier.md" = "Polysaccharide-specific multi-scale 1D-CNN gene role classifier training, Optuna TPE tuning, and Numba layer representation sweep" },
+  { "notebooks/spneumo-serotyping.md" = "S. pneumoniae de novo CPS locus discovery, hybrid MCL clustering, pan-locus graph construction, contig-split stitching, and database matching" },
 ]
 "API Reference" = [
   { "reference/core.md" = "serogen.core: SoA containers, sequences, alphabets, randstrobe indices, SW-Gotoh alignment, clustering, and graphs" },
   { "reference/genes.md" = "serogen.genes: OrfPredictor, GeneRoleClassifier, GeneRoles, and Genes containers" },
   { "reference/loci.md" = "serogen.loci: LocusSegmenter, LocusMatcher, LocusPredictor, and Locus/Loci models" },
+]
+"Community" = [
+  { "conduct.md" = "Contributor Covenant Code of Conduct" },
+  { "contributing.md" = "Local development setup, testing, and pull request guidelines" },
+  { "releases.md" = "Version history and changelog" },
 ]
 
 [project.plugins.mkdocstrings]
@@ -172,6 +189,7 @@ pymdownx.keys = {}
 pymdownx.magiclink = {}
 pymdownx.mark = {}
 pymdownx.smartsymbols = {}
+pymdownx.snippets = { base_path = ["."] }
 pymdownx.superfences.custom_fences = [
   { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
 ]
