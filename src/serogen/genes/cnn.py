@@ -51,7 +51,6 @@ class GeneRoleClassifier:
     lut_: np.ndarray[tuple[int, int, int], np.dtype[np.float32]]
     k_sizes_: np.ndarray[tuple[int], np.dtype[np.int32]]
     unique_ks_: np.ndarray[tuple[int], np.dtype[np.int32]]
-    k_indices_: np.ndarray[tuple[int], np.dtype[np.int32]]
 
     def __init__(
         self,
@@ -220,10 +219,6 @@ class GeneRoleClassifier:
             idx += count
 
         self.unique_ks_ = np.unique(self.k_sizes_).astype(np.int32)
-        self.k_indices_ = np.array(
-            [np.where(self.unique_ks_ == k)[0][0] for k in self.k_sizes_],
-            dtype=np.int32,
-        )
         max_k = int(np.max(self.unique_ks_))
 
         rng = np.random.default_rng(self.random_state)
@@ -447,7 +442,7 @@ class GeneRoleClassifier:
         """Compute Top-`k` classification accuracy on `(X, y)`."""
         probs = self.predict_proba(X)
         y_arr = np.asarray(y, dtype=self.classes_.dtype)
-        if len(y_arr) == 0:
+        if len(y_arr) == 0 or len(probs) == 0:
             return 0.0
         k_eff = min(max(1, int(k)), self.num_classes)
         top_k_idx = np.argsort(-probs, axis=1)[:, :k_eff]
@@ -558,10 +553,6 @@ class GeneRoleClassifier:
             inst.dense_b_ = data["dense_b"].astype(np.float32)
             inst.k_sizes_ = k_sizes
             inst.unique_ks_ = np.unique(k_sizes).astype(np.int32)
-            inst.k_indices_ = np.array(
-                [np.where(inst.unique_ks_ == k)[0][0] for k in k_sizes],
-                dtype=np.int32,
-            )
             inst.loss_history_ = [float(x) for x in data["loss_history"].tolist()]
             inst.lut_ = _compute_lut(inst.embedding_, inst.conv_w_, inst.k_sizes_)
             return inst
@@ -595,6 +586,101 @@ def _compute_lut(embedding: np.ndarray, conv_w: np.ndarray, k_sizes: np.ndarray)
     return lut
 
 
+@njit(cache=True, nogil=True, inline="always", fastmath=True)
+def _conv_pos_1d(
+    sequences_flat: np.ndarray,
+    abs_pos: int,
+    max_valid_k: int,
+    vocab_size: int,
+    out_channels: int,
+    lut: np.ndarray,
+    conv_b: np.ndarray,
+    val: np.ndarray,
+    tok_counts: np.ndarray,
+) -> None:
+    """Accumulate token frequency and 1D-CNN filter activations at `abs_pos` into `val`."""
+    t0 = int(sequences_flat[abs_pos])
+    if t0 < 0 or t0 >= vocab_size:
+        t0 = vocab_size - 1
+    tok_counts[t0] += np.float32(1.0)
+
+    for oc in range(out_channels):
+        val[oc] = conv_b[oc]
+
+    for k in range(max_valid_k):
+        tok = int(sequences_flat[abs_pos + k])
+        if tok < 0 or tok >= vocab_size:
+            tok = vocab_size - 1
+        for oc in range(out_channels):
+            val[oc] += lut[tok, k, oc]
+
+
+@njit(cache=True, nogil=True, inline="always", fastmath=True)
+def _finalize_features_1d(
+    max_val: np.ndarray,
+    sum_val: np.ndarray,
+    tok_counts: np.ndarray,
+    k_sizes: np.ndarray,
+    seq_len: int,
+    out_channels: int,
+    vocab_size: int,
+    h_out: np.ndarray,
+) -> None:
+    """Populate dual-pooled CNN features, log/linear length features, and AA composition into `h_out`."""
+    len_safe = max(float(seq_len), 1.0)
+    h_out[2 * out_channels] = np.float32(np.log(len_safe) / 7.0)
+    h_out[2 * out_channels + 1] = np.float32(len_safe / 1000.0)
+    inv_len = np.float32(0.25 / len_safe)
+    for t in range(vocab_size):
+        h_out[2 * out_channels + 2 + t] = tok_counts[t] * inv_len
+
+    for oc in range(out_channels):
+        k_width = int(k_sizes[oc])
+        if seq_len >= k_width:
+            out_len = seq_len - k_width + 1
+            h_out[oc] = max_val[oc]
+            h_out[out_channels + oc] = sum_val[oc] / np.float32(out_len)
+
+
+@njit(cache=True, nogil=True, inline="always", fastmath=True)
+def _linear_logits_1d(
+    h: np.ndarray,
+    dense_w: np.ndarray,
+    dense_b: np.ndarray,
+    logits_out: np.ndarray,
+) -> np.float32:
+    """Project feature vector `h` into `logits_out` and return `max(logits_out)`."""
+    feat_dim, n_classes = dense_w.shape
+    max_logit = np.float32(-1e30)
+    for c in range(n_classes):
+        s = dense_b[c]
+        for j in range(feat_dim):
+            s += h[j] * dense_w[j, c]
+        logits_out[c] = s
+        if s > max_logit:
+            max_logit = s
+    return max_logit
+
+
+@njit(cache=True, nogil=True, inline="always", fastmath=True)
+def _softmax_1d(
+    logits: np.ndarray,
+    max_logit: np.float32,
+    probs_out: np.ndarray,
+) -> None:
+    """Compute numerically stable softmax probabilities from `logits` into `probs_out`."""
+    n_classes = len(logits)
+    exp_sum = np.float32(0.0)
+    for c in range(n_classes):
+        e = np.exp(logits[c] - max_logit)
+        probs_out[c] = e
+        exp_sum += e
+
+    inv_sum = np.float32(1.0) / exp_sum
+    for c in range(n_classes):
+        probs_out[c] *= inv_sum
+
+
 @njit(cache=True, nogil=True, parallel=True, fastmath=True)
 def _extract_features_batch(
     sequences_flat: np.ndarray,
@@ -607,7 +693,6 @@ def _extract_features_batch(
     """Extract penultimate 1D-CNN dual-pooling + global AA composition features `(n_samples, feat_dim)`."""
     n_samples = len(offsets) - 1
     vocab_size, max_k, out_channels = lut.shape
-    base_dim = 2 * out_channels + 2 + vocab_size
     features_out = np.zeros((n_samples, feat_dim), dtype=np.float32)
 
     for i in prange(n_samples):
@@ -623,22 +708,17 @@ def _extract_features_batch(
         for pos in range(seq_len):
             rem = seq_len - pos
             max_valid_k = max_k if rem >= max_k else rem
-
-            t0 = int(sequences_flat[start + pos])
-            if t0 < 0 or t0 >= vocab_size:
-                t0 = vocab_size - 1
-            tok_counts[t0] += np.float32(1.0)
-
-            for oc in range(out_channels):
-                val[oc] = conv_b[oc]
-
-            for k in range(max_valid_k):
-                tok = int(sequences_flat[start + pos + k])
-                if tok < 0 or tok >= vocab_size:
-                    tok = vocab_size - 1
-                for oc in range(out_channels):
-                    val[oc] += lut[tok, k, oc]
-
+            _conv_pos_1d(
+                sequences_flat,
+                start + pos,
+                max_valid_k,
+                vocab_size,
+                out_channels,
+                lut,
+                conv_b,
+                val,
+                tok_counts,
+            )
             for oc in range(out_channels):
                 if k_sizes[oc] <= rem:
                     v = val[oc]
@@ -647,20 +727,16 @@ def _extract_features_batch(
                         if v > max_val[oc]:
                             max_val[oc] = v
 
-        len_safe = max(float(seq_len), 1.0)
-        features_out[i, 2 * out_channels] = np.float32(np.log(len_safe) / 7.0)
-        if feat_dim >= base_dim:
-            features_out[i, 2 * out_channels + 1] = np.float32(len_safe / 1000.0)
-            inv_len = np.float32(0.25 / len_safe)
-            for t in range(vocab_size):
-                features_out[i, 2 * out_channels + 2 + t] = tok_counts[t] * inv_len
-
-        for oc in range(out_channels):
-            k_width = int(k_sizes[oc])
-            if seq_len >= k_width:
-                out_len = seq_len - k_width + 1
-                features_out[i, oc] = max_val[oc]
-                features_out[i, out_channels + oc] = sum_val[oc] / np.float32(out_len)
+        _finalize_features_1d(
+            max_val,
+            sum_val,
+            tok_counts,
+            k_sizes,
+            seq_len,
+            out_channels,
+            vocab_size,
+            features_out[i],
+        )
 
     return features_out
 
@@ -682,11 +758,7 @@ def _logits_batch(
     logits_out = np.empty((n_samples, n_classes), dtype=np.float32)
 
     for i in prange(n_samples):
-        for c in range(n_classes):
-            s = dense_b[c]
-            for j in range(feat_dim):
-                s += h[i, j] * dense_w[j, c]
-            logits_out[i, c] = s
+        _linear_logits_1d(h[i], dense_w, dense_b, logits_out[i])
 
     return logits_out
 
@@ -710,16 +782,7 @@ def _forward_batch(
         for c in range(n_classes):
             if probs[i, c] > max_logit:
                 max_logit = probs[i, c]
-
-        exp_sum = np.float32(0.0)
-        for c in range(n_classes):
-            e = np.exp(probs[i, c] - max_logit)
-            probs[i, c] = e
-            exp_sum += e
-
-        inv_sum = np.float32(1.0) / exp_sum
-        for c in range(n_classes):
-            probs[i, c] *= inv_sum
+        _softmax_1d(probs[i], max_logit, probs[i])
 
     return probs
 
@@ -753,7 +816,6 @@ def _train_adam(
     feat_dim = dense_w.shape[0]
     n_classes = len(dense_b)
     vocab_size, embed_dim = embedding.shape
-    base_dim = 2 * out_channels + 2 + vocab_size
 
     m_emb = np.zeros_like(embedding)
     v_emb = np.zeros_like(embedding)
@@ -802,9 +864,6 @@ def _train_adam(
                 seq_len = end - start
 
                 h = np.zeros(feat_dim, dtype=np.float32)
-                len_safe = max(float(seq_len), 1.0)
-                h[2 * out_channels] = np.float32(np.log(len_safe) / 7.0)
-
                 max_val = np.zeros(out_channels, dtype=np.float32)
                 sum_val = np.zeros(out_channels, dtype=np.float32)
                 argmax_pos = np.full(out_channels, -1, dtype=np.int32)
@@ -815,22 +874,17 @@ def _train_adam(
                 for pos in range(seq_len):
                     rem = seq_len - pos
                     max_valid_k = max_k if rem >= max_k else rem
-
-                    t0 = int(sequences_flat[start + pos])
-                    if t0 < 0 or t0 >= vocab_size:
-                        t0 = vocab_size - 1
-                    tok_counts[t0] += np.float32(1.0)
-
-                    for oc in range(out_channels):
-                        val[oc] = conv_b[oc]
-
-                    for k in range(max_valid_k):
-                        tok = int(sequences_flat[start + pos + k])
-                        if tok < 0 or tok >= vocab_size:
-                            tok = vocab_size - 1
-                        for oc in range(out_channels):
-                            val[oc] += lut[tok, k, oc]
-
+                    _conv_pos_1d(
+                        sequences_flat,
+                        start + pos,
+                        max_valid_k,
+                        vocab_size,
+                        out_channels,
+                        lut,
+                        conv_b,
+                        val,
+                        tok_counts,
+                    )
                     for oc in range(out_channels):
                         if k_sizes[oc] <= rem:
                             v = val[oc]
@@ -841,39 +895,21 @@ def _train_adam(
                                     max_val[oc] = v
                                     argmax_pos[oc] = pos
 
-                if feat_dim >= base_dim:
-                    h[2 * out_channels + 1] = np.float32(len_safe / 1000.0)
-                    inv_len = np.float32(0.25 / len_safe)
-                    for t in range(vocab_size):
-                        h[2 * out_channels + 2 + t] = tok_counts[t] * inv_len
-
-                for oc in range(out_channels):
-                    k_width = int(k_sizes[oc])
-                    if seq_len >= k_width:
-                        out_len = seq_len - k_width + 1
-                        h[oc] = max_val[oc]
-                        h[out_channels + oc] = sum_val[oc] / np.float32(out_len)
+                _finalize_features_1d(
+                    max_val,
+                    sum_val,
+                    tok_counts,
+                    k_sizes,
+                    seq_len,
+                    out_channels,
+                    vocab_size,
+                    h,
+                )
 
                 logits = np.empty(n_classes, dtype=np.float32)
-                max_logit = np.float32(-1e30)
-                for c in range(n_classes):
-                    s = dense_b[c]
-                    for j in range(feat_dim):
-                        s += h[j] * dense_w[j, c]
-                    logits[c] = s
-                    if s > max_logit:
-                        max_logit = s
-
+                max_logit = _linear_logits_1d(h, dense_w, dense_b, logits)
                 probs = np.empty(n_classes, dtype=np.float32)
-                exp_sum = np.float32(0.0)
-                for c in range(n_classes):
-                    e = np.exp(logits[c] - max_logit)
-                    probs[c] = e
-                    exp_sum += e
-
-                inv_sum = np.float32(1.0) / exp_sum
-                for c in range(n_classes):
-                    probs[c] *= inv_sum
+                _softmax_1d(logits, max_logit, probs)
 
                 target = int(y_indexed[i])
                 w = class_weights[target] * sample_weights[i]

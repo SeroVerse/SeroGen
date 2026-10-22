@@ -821,40 +821,6 @@ def _(
                 tr_pos += 1
         return train_idx, test_idx
 
-    @njit(nogil=True)
-    def stratified_kfold_assign(
-        y: np.ndarray,
-        n_folds: int,
-        seed: int,
-    ) -> np.ndarray:
-        """Assign each sample in `y` to a stratified fold ID in `0..n_folds-1`."""
-        np.random.seed(seed)
-        n = len(y)
-        order = np.argsort(y)
-        fold_ids = np.empty(n, dtype=np.int32)
-
-        start = 0
-        rr = 0
-        while start < n:
-            c = y[order[start]]
-            end = start + 1
-            while end < n and y[order[end]] == c:
-                end += 1
-
-            count = end - start
-            class_indices = order[start:end].copy()
-            for i in range(count - 1, 0, -1):
-                j = np.random.randint(0, i + 1)
-                tmp = class_indices[i]
-                class_indices[i] = class_indices[j]
-                class_indices[j] = tmp
-            for k in range(count):
-                fold_ids[class_indices[k]] = rr % n_folds
-                rr += 1
-            start = end
-
-        return fold_ids
-
     def evaluate_sparse_metrics(
         y_true: np.ndarray,
         y_pred: np.ndarray,
@@ -1168,34 +1134,20 @@ def _(
         X_train: Sequences,
         y_train: np.ndarray,
         n_trials: int,
-        cv_folds: int,
         epochs: int,
         seed: int,
     ) -> tuple[optuna.Study, list[dict[str, object]], list[dict[str, object]]]:
-        """Run an in-memory Optuna TPE study maximizing inner-validation Macro F1 on pre-packed SoA splits."""
-        if cv_folds <= 1:
-            tr_counts = np.bincount(y_train.astype(np.int32), minlength=29)
-            max_val_per_class = max(1, int(round(float(np.median(tr_counts[:29])) * 0.20)))
-            inner_tr, inner_val = stratified_split_kernel(y_train, 0.20, seed + 101, max_val_per_class)
-            raw_splits = [(X_train[inner_tr], y_train[inner_tr], X_train[inner_val], y_train[inner_val])]
-        else:
-            fold_ids = stratified_kfold_assign(y_train, cv_folds, seed + 101)
-            raw_splits = []
-            for f in range(cv_folds):
-                tr_mask = fold_ids != f
-                val_mask = fold_ids == f
-                raw_splits.append((X_train[tr_mask], y_train[tr_mask], X_train[val_mask], y_train[val_mask]))
+        """Run an in-memory Optuna TPE study maximizing inner-validation Macro F1 on a pre-packed SoA split."""
+        tr_counts = np.bincount(y_train.astype(np.int32), minlength=29)
+        max_val_per_class = max(1, int(round(float(np.median(tr_counts[:29])) * 0.20)))
+        inner_tr, inner_val = stratified_split_kernel(y_train, 0.20, seed + 101, max_val_per_class)
+        x_tr, y_tr = X_train[inner_tr], y_train[inner_tr]
+        x_vl, y_vl = X_train[inner_val], y_train[inner_val]
 
-        # Pre-pack flat SoA (x_flat, offsets) tuples once per fold outside the trial loop
-        soa_splits = [
-            (
-                (x_tr.seqs.astype(np.uint8, copy=False), x_tr.indptr.astype(np.int64, copy=False)),
-                y_tr,
-                (x_vl.seqs.astype(np.uint8, copy=False), x_vl.indptr.astype(np.int64, copy=False)),
-                y_vl.astype(np.int32, copy=False),
-            )
-            for x_tr, y_tr, x_vl, y_vl in raw_splits
-        ]
+        # Pre-pack flat SoA (x_flat, offsets) tuples once outside the trial loop
+        x_tr_soa = (x_tr.seqs.astype(np.uint8, copy=False), x_tr.indptr.astype(np.int64, copy=False))
+        x_vl_soa = (x_vl.seqs.astype(np.uint8, copy=False), x_vl.indptr.astype(np.int64, copy=False))
+        y_vl_i32 = y_vl.astype(np.int32, copy=False)
 
         sampler = optuna.samplers.TPESampler(seed=seed)
         study = optuna.create_study(direction="maximize", sampler=sampler)
@@ -1218,29 +1170,24 @@ def _(
                 bs = trial.suggest_categorical("batch_size", [16, 32, 64])
 
                 k_tuple = tuple(int(k.strip()) for k in kernel_combo.split(","))
-                fold_f1s: list[float] = []
-
-                for f_idx, (x_tr_soa, y_tr, x_vl_soa, y_vl_i32) in enumerate(soa_splits):
-                    cand_clf = GeneRoleClassifier(
-                        vocab_size=23,
-                        embed_dim=int(embed_dim),
-                        num_filters=int(num_filters),
-                        kernel_size=k_tuple,
-                        learning_rate=float(lr),
-                        epochs=epochs,
-                        batch_size=int(bs),
-                        weight_decay=float(wd),
-                        class_weight="balanced",
-                        random_state=seed + f_idx,
-                    )
-                    cand_clf.fit(x_tr_soa, y_tr)
-                    preds_vl = cand_clf.predict(x_vl_soa).astype(np.int32, copy=False)
-                    fold_f1s.append(macro_f1_kernel(y_vl_i32, preds_vl, 29))
-
-                mean_f1 = float(np.mean(fold_f1s))
-                study.tell(trial, mean_f1)
+                cand_clf = GeneRoleClassifier(
+                    vocab_size=23,
+                    embed_dim=int(embed_dim),
+                    num_filters=int(num_filters),
+                    kernel_size=k_tuple,
+                    learning_rate=float(lr),
+                    epochs=epochs,
+                    batch_size=int(bs),
+                    weight_decay=float(wd),
+                    class_weight="balanced",
+                    random_state=seed,
+                )
+                cand_clf.fit(x_tr_soa, y_tr)
+                preds_vl = cand_clf.predict(x_vl_soa).astype(np.int32, copy=False)
+                val_f1 = macro_f1_kernel(y_vl_i32, preds_vl, 29)
+                study.tell(trial, val_f1)
                 bar.update(
-                    subtitle=f"Trial {trial.number + 1}/{n_trials} — Val Macro F1: {mean_f1 * 100:.2f}% (Best: {study.best_value * 100:.2f}%)"
+                    subtitle=f"Trial {trial.number + 1}/{n_trials} — Val Macro F1: {val_f1 * 100:.2f}% (Best: {study.best_value * 100:.2f}%)"
                 )
 
         trial_records: list[dict[str, object]] = []
@@ -1266,16 +1213,8 @@ def _(
             )
 
         importance_records: list[dict[str, object]] = []
-        if len(study.trials) >= 4:
-            try:
-                imp_map = optuna.importance.get_param_importances(study)
-                for p_name, p_val in imp_map.items():
-                    importance_records.append({"parameter": p_name, "importance": float(p_val)})
-            except Exception:
-                pass
-
-        # Pure-NumPy one-way ANOVA eta-squared fallback when sklearn is not installed
-        if not importance_records and len(trial_records) >= 2:
+        # Pure-NumPy one-way ANOVA eta-squared hyperparameter importance
+        if len(trial_records) >= 2:
             y_vals = np.array([float(r["macro_f1"]) for r in trial_records], dtype=np.float64)
             grand_mean = float(np.mean(y_vals))
             ss_total = float(np.sum((y_vals - grand_mean) ** 2))
@@ -1368,7 +1307,6 @@ def _(
         X_train=X_train,
         y_train=y_train,
         n_trials=20,
-        cv_folds=1,
         epochs=30,
         seed=42,
     )

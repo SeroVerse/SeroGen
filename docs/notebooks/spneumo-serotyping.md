@@ -19,15 +19,6 @@ This presentation validates [`LocusPredictor`][serogen.loci.predictor.LocusPredi
 
 Rather than relying on pre-trimmed reference databases or global nucleotide alignment, SeroGen extracts CPS biosynthetic operons **de novo** from unannotated sequences and whole chromosomes (including fragmented/contig-split assemblies), classifies divergent polysaccharide genes with [`GeneRoleClassifier`][serogen.genes.cnn.GeneRoleClassifier], clusters them into functional orthogroups via hybrid Markov Clustering ([`Clusterer(mode="mcl")`][serogen.core.seq.clustering.Clusterer]), and compresses the resulting [`Loci`][serogen.loci.models.Loci] batch into an indexed de novo database and directed consensus pan-locus graph ([`Loci.as_pan_graph`][serogen.core.graph.models.GraphBatch.as_pan_graph]).
 
-<div class="serogen-deck-toolbar">
-  <span class="deck-meta"><strong>5 Slides</strong> · Interactive 16:9 Marimo Slide Deck · Navigate with ← / → arrow keys inside the deck</span>
-  <div class="serogen-deck-actions">
-    <a class="serogen-deck-btn" href="assets/benchmark_spneumo_db.html" target="_blank" rel="noopener">
-      Present Fullscreen Slideshow ↗
-    </a>
-  </div>
-</div>
-
 <div class="serogen-slide-frame">
   <iframe src="assets/benchmark_spneumo_db.html" title="S. pneumoniae De Novo CPS Locus Discovery & Database Slide Deck" loading="lazy" allowfullscreen></iframe>
 </div>
