@@ -22,14 +22,14 @@ Rather than relying on pre-trimmed reference databases or global nucleotide alig
 <div class="serogen-deck-toolbar">
   <span class="deck-meta"><strong>5 Slides</strong> · Interactive 16:9 Marimo Slide Deck · Navigate with ← / → arrow keys inside the deck</span>
   <div class="serogen-deck-actions">
-    <a class="serogen-deck-btn" href="../assets/benchmark_spneumo_db.html" target="_blank" rel="noopener">
+    <a class="serogen-deck-btn" href="assets/benchmark_spneumo_db.html" target="_blank" rel="noopener">
       Present Fullscreen Slideshow ↗
     </a>
   </div>
 </div>
 
 <div class="serogen-slide-frame">
-  <iframe src="../assets/benchmark_spneumo_db.html" title="S. pneumoniae De Novo CPS Locus Discovery & Database Slide Deck" loading="lazy" allowfullscreen></iframe>
+  <iframe src="assets/benchmark_spneumo_db.html" title="S. pneumoniae De Novo CPS Locus Discovery & Database Slide Deck" loading="lazy" allowfullscreen></iframe>
 </div>
 
 ---

@@ -29,14 +29,14 @@ Bacterial surface polysaccharide loci (capsular polysaccharides `CPS`, O-antigen
 <div class="serogen-deck-toolbar">
   <span class="deck-meta"><strong>6 Slides</strong> · Interactive 16:9 Marimo Slide Deck · Navigate with ← / → arrow keys inside the deck</span>
   <div class="serogen-deck-actions">
-    <a class="serogen-deck-btn" href="../assets/train_gene_classifier.html" target="_blank" rel="noopener">
+    <a class="serogen-deck-btn" href="assets/train_gene_classifier.html" target="_blank" rel="noopener">
       Present Fullscreen Slideshow ↗
     </a>
   </div>
 </div>
 
 <div class="serogen-slide-frame">
-  <iframe src="../assets/train_gene_classifier.html" title="Polysaccharide-Specific CNN Gene Role Classifier Slide Deck" loading="lazy" allowfullscreen></iframe>
+  <iframe src="assets/train_gene_classifier.html" title="Polysaccharide-Specific CNN Gene Role Classifier Slide Deck" loading="lazy" allowfullscreen></iframe>
 </div>
 
 ---

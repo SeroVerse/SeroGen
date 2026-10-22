@@ -21,14 +21,14 @@ Horizontally acquired prophages frequently encode seroconverting polysaccharide-
 <div class="serogen-deck-toolbar">
   <span class="deck-meta"><strong>5 Slides</strong> · Interactive 16:9 Marimo Slide Deck · Navigate with ← / → arrow keys inside the deck</span>
   <div class="serogen-deck-actions">
-    <a class="serogen-deck-btn" href="../assets/benchmark_prophage_orfs.html" target="_blank" rel="noopener">
+    <a class="serogen-deck-btn" href="assets/benchmark_prophage_orfs.html" target="_blank" rel="noopener">
       Present Fullscreen Slideshow ↗
     </a>
   </div>
 </div>
 
 <div class="serogen-slide-frame">
-  <iframe src="../assets/benchmark_prophage_orfs.html" title="Single-Pass Bacterial & Prophage ORF Benchmark Slide Deck" loading="lazy" allowfullscreen></iframe>
+  <iframe src="assets/benchmark_prophage_orfs.html" title="Single-Pass Bacterial & Prophage ORF Benchmark Slide Deck" loading="lazy" allowfullscreen></iframe>
 </div>
 
 ---
