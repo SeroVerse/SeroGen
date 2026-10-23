@@ -22,9 +22,9 @@ class GeneRoleClassifier:
     r"""Classifies `GeneRole`s from amino acid sequences using a Multi-Scale 1D-CNN with Dual Pooling.
 
     Learns representations from variable-length sequence token arrays using an embedding layer,
-    multi-scale 1D convolutions (e.g. receptive fields 5, 9, 13), ReLU activation, dual pooling
-    (global max pooling + global average pooling) concatenated with normalized log-length and
-    amino acid composition, and a dense classification layer. Optimization is performed via a
+    multi-scale 1D convolutions (e.g. receptive fields 5, 11, 17), ReLU activation, emergent dual
+    pooling (`[conv_max, conv_avg]`), a dense role classification head, and a joint 1-bit genomic
+    `source` readout head (`0 = bacterial`, `1 = phage/prophage`). Optimization is performed via a
     parallel compiled Numba AdamW training kernel with exact gradient routing.
 
     Attributes:
@@ -47,6 +47,8 @@ class GeneRoleClassifier:
     conv_b_: np.ndarray[tuple[int], np.dtype[np.float32]]
     dense_w_: np.ndarray[tuple[int, int], np.dtype[np.float32]]
     dense_b_: np.ndarray[tuple[int], np.dtype[np.float32]]
+    source_w_: np.ndarray[tuple[int], np.dtype[np.float32]]
+    source_b_: np.ndarray[tuple[int], np.dtype[np.float32]]
     loss_history_: list[float]
     lut_: np.ndarray[tuple[int, int, int], np.dtype[np.float32]]
     k_sizes_: np.ndarray[tuple[int], np.dtype[np.int32]]
@@ -92,10 +94,10 @@ class GeneRoleClassifier:
 
     @property
     def feature_dim(self) -> int:
-        """Dimensionality of the penultimate 1D-CNN + global composition feature vector."""
+        """Dimensionality of the penultimate 1D-CNN dual-pooling (`[conv_max, conv_avg]`) feature vector."""
         if getattr(self, "dense_w_", None) is not None:
             return int(self.dense_w_.shape[0])
-        return 2 * int(self.num_filters) + 2 + int(self.vocab_size)
+        return 2 * int(self.num_filters)
 
     def _pack_ragged(
         self,
@@ -166,6 +168,8 @@ class GeneRoleClassifier:
         y: Sequence[int | GeneRole] | np.ndarray,
         sample_weight: Sequence[float] | np.ndarray | None = None,
         *,
+        y_source: Sequence[int] | np.ndarray | None = None,
+        source_loss_weight: float = 0.25,
         init_from: GeneRoleClassifier | None = None,
         backbone_lr_scale: float = 1.0,
     ) -> Self:
@@ -175,18 +179,28 @@ class GeneRoleClassifier:
             raise ValueError("Training dataset cannot be empty.")
 
         y_i64 = y_raw.astype(np.int64, copy=False)
-        if int(np.min(y_i64)) >= -128 and int(np.max(y_i64)) <= 127:
+        if self.__class__ is GeneRoleClassifier:
+            pos_mask = (y_i64 >= 0) & (y_i64 != int(GeneRole.UNKNOWN))
+        else:
+            pos_mask = y_i64 >= 0
+
+        if not np.any(pos_mask):
+            raise ValueError("Training dataset must contain at least one positive class label.")
+
+        y_pos = y_i64[pos_mask]
+        if int(np.min(y_pos)) >= -128 and int(np.max(y_pos)) <= 127:
             y_arr = y_i64.astype(np.int8)
-            self.classes_ = np.unique(y_arr).astype(np.int8)
+            self.classes_ = np.unique(y_pos).astype(np.int8)
         else:
             y_arr = y_i64
-            self.classes_ = np.unique(y_arr).astype(np.int64)
+            self.classes_ = np.unique(y_pos).astype(np.int64)
 
         n_classes = len(self.classes_)
         if n_classes < 2:
             raise ValueError(f"{self.__class__.__name__} requires at least 2 distinct classes, found {n_classes}.")
 
-        y_indexed = np.searchsorted(self.classes_, y_arr).astype(np.int32)
+        y_indexed = np.full(len(y_arr), -1, dtype=np.int32)
+        y_indexed[pos_mask] = np.searchsorted(self.classes_, y_arr[pos_mask]).astype(np.int32)
 
         if sample_weight is not None:
             sw_arr = np.asarray(sample_weight, dtype=np.float32)
@@ -200,12 +214,31 @@ class GeneRoleClassifier:
             sw_arr = np.ones(len(y_arr), dtype=np.float32)
 
         if self.class_weight == "balanced":
-            counts = np.bincount(y_indexed, weights=sw_arr, minlength=n_classes).astype(np.float32)
+            counts = np.bincount(y_indexed[pos_mask], weights=sw_arr[pos_mask], minlength=n_classes).astype(np.float32)
             counts_safe = np.maximum(counts, 1.0)
-            weights = float(np.sum(sw_arr)) / (float(n_classes) * counts_safe)
+            weights = float(np.sum(sw_arr[pos_mask])) / (float(n_classes) * counts_safe)
             class_weights = (weights / np.mean(weights)).astype(np.float32)
         else:
             class_weights = np.ones(n_classes, dtype=np.float32)
+
+        if y_source is not None:
+            y_src_raw = np.asarray(y_source, dtype=np.int8)
+            if len(y_src_raw) != len(y_arr):
+                raise ValueError(f"Length of y_source ({len(y_src_raw)}) does not match y ({len(y_arr)}).")
+            y_src_arr = np.where((y_src_raw == 0) | (y_src_raw == 1), y_src_raw, np.int8(-1))
+            valid_src = y_src_arr >= 0
+            if np.any(valid_src):
+                src_counts = np.bincount(
+                    y_src_arr[valid_src].astype(np.int32), weights=sw_arr[valid_src], minlength=2
+                ).astype(np.float32)
+                src_safe = np.maximum(src_counts, 1.0)
+                src_w = float(np.sum(sw_arr[valid_src])) / (2.0 * src_safe)
+                src_class_weights = (src_w / np.mean(src_w)).astype(np.float32)
+            else:
+                src_class_weights = np.ones(2, dtype=np.float32)
+        else:
+            y_src_arr = np.full(len(y_arr), -1, dtype=np.int8)
+            src_class_weights = np.ones(2, dtype=np.float32)
 
         k_tuple = (self.kernel_size,) if isinstance(self.kernel_size, int) else tuple(int(k) for k in self.kernel_size)
         n_k = len(k_tuple)
@@ -242,15 +275,28 @@ class GeneRoleClassifier:
                 self.conv_w_[oc, :, :k_width] = rng.normal(0.0, std, (self.embed_dim, k_width)).astype(np.float32)
             self.conv_b_ = np.zeros(self.num_filters, dtype=np.float32)
 
-        feat_dim = 2 * self.num_filters + 2 + self.vocab_size
-        cnn_feat_dim = 2 * self.num_filters
-        self.dense_w_ = np.zeros((feat_dim, n_classes), dtype=np.float32)
-        self.dense_w_[:cnn_feat_dim, :] = rng.normal(
+        feat_dim = 2 * self.num_filters
+        self.dense_w_ = rng.normal(
             0.0,
-            np.sqrt(2.0 / cnn_feat_dim),
-            (cnn_feat_dim, n_classes),
+            np.sqrt(2.0 / feat_dim),
+            (feat_dim, n_classes),
         ).astype(np.float32)
         self.dense_b_ = np.zeros(n_classes, dtype=np.float32)
+
+        if (
+            init_from is not None
+            and getattr(init_from, "source_w_", None) is not None
+            and len(init_from.source_w_) == feat_dim
+        ):
+            self.source_w_ = init_from.source_w_.astype(np.float32, copy=True)
+            self.source_b_ = init_from.source_b_.astype(np.float32, copy=True)
+        else:
+            self.source_w_ = (
+                rng.normal(0.0, np.sqrt(2.0 / feat_dim), feat_dim).astype(np.float32)
+                if np.any(y_src_arr >= 0)
+                else np.zeros(feat_dim, dtype=np.float32)
+            )
+            self.source_b_ = np.zeros(1, dtype=np.float32)
 
         x_flat, offsets = self._pack_ragged(X)
         if len(offsets) - 1 != len(y_arr):
@@ -264,6 +310,8 @@ class GeneRoleClassifier:
             self.conv_b_,
             self.dense_w_,
             self.dense_b_,
+            self.source_w_,
+            self.source_b_,
             loss_hist,
         ) = _train_adam(
             x_flat,
@@ -271,11 +319,16 @@ class GeneRoleClassifier:
             y_indexed,
             class_weights,
             sw_arr,
+            y_src_arr,
+            src_class_weights,
+            float(source_loss_weight),
             self.embedding_,
             self.conv_w_,
             self.conv_b_,
             self.dense_w_,
             self.dense_b_,
+            self.source_w_,
+            self.source_b_,
             self.k_sizes_,
             int(self.epochs),
             int(self.batch_size),
@@ -326,6 +379,9 @@ class GeneRoleClassifier:
             return self.predict_proba(X)
 
         x_flat, offsets = self._pack_ragged(X)
+        if layer == "embed_mean":
+            return _embed_mean_batch(x_flat, offsets, self.embedding_)
+
         h = _extract_features_batch(
             x_flat,
             offsets,
@@ -342,15 +398,13 @@ class GeneRoleClassifier:
         if layer == "conv_avg":
             return np.ascontiguousarray(h[:, nf : 2 * nf])
         if layer == "task_weighted":
-            w_norms = np.maximum(np.linalg.norm(self.dense_w_, axis=1).astype(np.float32), np.float32(1e-6))
+            w_norms = np.maximum(
+                np.linalg.norm(self.dense_w_[: self.feature_dim], axis=1).astype(np.float32), np.float32(1e-6)
+            )
             return np.ascontiguousarray(h * w_norms[None, :])
         if layer == "task_weighted_conv_max":
             w_norms = np.maximum(np.linalg.norm(self.dense_w_[:nf], axis=1).astype(np.float32), np.float32(1e-6))
             return np.ascontiguousarray(h[:, :nf] * w_norms[None, :])
-        if layer == "embed_mean":
-            aa_start = 2 * nf + 2
-            aa_freqs = h[:, aa_start : aa_start + self.vocab_size] * np.float32(4.0)
-            return np.ascontiguousarray(aa_freqs @ self.embedding_)
         if layer.startswith("conv_k"):
             try:
                 k_val = int(layer[6:])
@@ -401,6 +455,39 @@ class GeneRoleClassifier:
             self.dense_b_,
             self.k_sizes_,
         )
+
+    def predict_source_proba(
+        self,
+        X: Genes | Sequences | Sequence[Any] | tuple[np.ndarray, np.ndarray],
+    ) -> np.ndarray[tuple[int], np.dtype[np.float32]]:
+        """Predict probability `P(phage | x)` in `[0.0, 1.0]` for each sequence in `X`."""
+        self._check_is_fitted()
+        x_flat, offsets = self._pack_ragged(X)
+        if len(offsets) <= 1:
+            return np.empty(0, dtype=np.float32)
+        h = _extract_features_batch(
+            x_flat,
+            offsets,
+            self.lut_,
+            self.conv_b_,
+            self.k_sizes_,
+            self.feature_dim,
+        )
+        sw = getattr(self, "source_w_", None)
+        sb = getattr(self, "source_b_", None)
+        if sw is None or sb is None or len(sw) != h.shape[1] or not np.any(sw != 0.0):
+            return np.full(h.shape[0], 0.5, dtype=np.float32)
+        logits = np.clip(h @ sw + sb[0], np.float32(-30.0), np.float32(30.0))
+        return (np.float32(1.0) / (np.float32(1.0) + np.exp(-logits))).astype(np.float32)
+
+    def predict_source(
+        self,
+        X: Genes | Sequences | Sequence[Any] | tuple[np.ndarray, np.ndarray],
+        threshold: float = 0.5,
+    ) -> np.ndarray[tuple[int], np.dtype[np.uint8]]:
+        """Predict binary genomic source (`0` = bacterial, `1` = phage/prophage) for each sequence in `X`."""
+        probs = self.predict_source_proba(X)
+        return (probs >= np.float32(threshold)).astype(np.uint8)
 
     def predict(
         self,
@@ -488,6 +575,8 @@ class GeneRoleClassifier:
             ],
             dtype=np.float64,
         )
+        sw = getattr(self, "source_w_", np.zeros(self.feature_dim, dtype=np.float32))
+        sb = getattr(self, "source_b_", np.zeros(1, dtype=np.float32))
         np.savez_compressed(
             p,
             meta=meta,
@@ -498,6 +587,8 @@ class GeneRoleClassifier:
             conv_b=self.conv_b_,
             dense_w=self.dense_w_,
             dense_b=self.dense_b_,
+            source_w=sw,
+            source_b=sb,
             k_sizes=self.k_sizes_,
             loss_history=np.array(getattr(self, "loss_history_", []), dtype=np.float32),
         )
@@ -551,6 +642,13 @@ class GeneRoleClassifier:
             inst.conv_b_ = data["conv_b"].astype(np.float32)
             inst.dense_w_ = data["dense_w"].astype(np.float32)
             inst.dense_b_ = data["dense_b"].astype(np.float32)
+            f_dim = int(inst.dense_w_.shape[0])
+            inst.source_w_ = (
+                data["source_w"].astype(np.float32) if "source_w" in data else np.zeros(f_dim, dtype=np.float32)
+            )
+            inst.source_b_ = (
+                data["source_b"].astype(np.float32) if "source_b" in data else np.zeros(1, dtype=np.float32)
+            )
             inst.k_sizes_ = k_sizes
             inst.unique_ks_ = np.unique(k_sizes).astype(np.int32)
             inst.loss_history_ = [float(x) for x in data["loss_history"].tolist()]
@@ -596,14 +694,8 @@ def _conv_pos_1d(
     lut: np.ndarray,
     conv_b: np.ndarray,
     val: np.ndarray,
-    tok_counts: np.ndarray,
 ) -> None:
-    """Accumulate token frequency and 1D-CNN filter activations at `abs_pos` into `val`."""
-    t0 = int(sequences_flat[abs_pos])
-    if t0 < 0 or t0 >= vocab_size:
-        t0 = vocab_size - 1
-    tok_counts[t0] += np.float32(1.0)
-
+    """Accumulate 1D-CNN filter activations at `abs_pos` into `val`."""
     for oc in range(out_channels):
         val[oc] = conv_b[oc]
 
@@ -619,27 +711,44 @@ def _conv_pos_1d(
 def _finalize_features_1d(
     max_val: np.ndarray,
     sum_val: np.ndarray,
-    tok_counts: np.ndarray,
     k_sizes: np.ndarray,
     seq_len: int,
     out_channels: int,
-    vocab_size: int,
     h_out: np.ndarray,
 ) -> None:
-    """Populate dual-pooled CNN features, log/linear length features, and AA composition into `h_out`."""
-    len_safe = max(float(seq_len), 1.0)
-    h_out[2 * out_channels] = np.float32(np.log(len_safe) / 7.0)
-    h_out[2 * out_channels + 1] = np.float32(len_safe / 1000.0)
-    inv_len = np.float32(0.25 / len_safe)
-    for t in range(vocab_size):
-        h_out[2 * out_channels + 2 + t] = tok_counts[t] * inv_len
-
+    """Populate dual-pooled 1D-CNN features (`[conv_max, conv_avg]`) into `h_out`."""
     for oc in range(out_channels):
         k_width = int(k_sizes[oc])
         if seq_len >= k_width:
             out_len = seq_len - k_width + 1
             h_out[oc] = max_val[oc]
             h_out[out_channels + oc] = sum_val[oc] / np.float32(out_len)
+
+
+@njit(cache=True, nogil=True, parallel=True, fastmath=True)
+def _embed_mean_batch(
+    sequences_flat: np.ndarray,
+    offsets: np.ndarray,
+    embedding: np.ndarray,
+) -> np.ndarray:
+    """Compute length-normalized mean amino-acid embeddings `(n_samples, embed_dim)`."""
+    n_samples = len(offsets) - 1
+    vocab_size, embed_dim = embedding.shape
+    out = np.zeros((n_samples, embed_dim), dtype=np.float32)
+    for i in prange(n_samples):
+        start = int(offsets[i])
+        end = int(offsets[i + 1])
+        seq_len = end - start
+        if seq_len <= 0:
+            continue
+        inv_len = np.float32(1.0 / float(seq_len))
+        for pos in range(start, end):
+            tok = int(sequences_flat[pos])
+            if tok < 0 or tok >= vocab_size:
+                tok = vocab_size - 1
+            for ic in range(embed_dim):
+                out[i, ic] += embedding[tok, ic] * inv_len
+    return out
 
 
 @njit(cache=True, nogil=True, inline="always", fastmath=True)
@@ -690,7 +799,7 @@ def _extract_features_batch(
     k_sizes: np.ndarray,
     feat_dim: int,
 ) -> np.ndarray:
-    """Extract penultimate 1D-CNN dual-pooling + global AA composition features `(n_samples, feat_dim)`."""
+    """Extract penultimate 1D-CNN dual-pooling features `(n_samples, feat_dim)`."""
     n_samples = len(offsets) - 1
     vocab_size, max_k, out_channels = lut.shape
     features_out = np.zeros((n_samples, feat_dim), dtype=np.float32)
@@ -703,7 +812,6 @@ def _extract_features_batch(
         max_val = np.zeros(out_channels, dtype=np.float32)
         sum_val = np.zeros(out_channels, dtype=np.float32)
         val = np.empty(out_channels, dtype=np.float32)
-        tok_counts = np.zeros(vocab_size, dtype=np.float32)
 
         for pos in range(seq_len):
             rem = seq_len - pos
@@ -717,7 +825,6 @@ def _extract_features_batch(
                 lut,
                 conv_b,
                 val,
-                tok_counts,
             )
             for oc in range(out_channels):
                 if k_sizes[oc] <= rem:
@@ -730,11 +837,9 @@ def _extract_features_batch(
         _finalize_features_1d(
             max_val,
             sum_val,
-            tok_counts,
             k_sizes,
             seq_len,
             out_channels,
-            vocab_size,
             features_out[i],
         )
 
@@ -794,11 +899,16 @@ def _train_adam(
     y_indexed: np.ndarray,
     class_weights: np.ndarray,
     sample_weights: np.ndarray,
+    y_source: np.ndarray,
+    src_class_weights: np.ndarray,
+    source_loss_weight: float,
     embedding: np.ndarray,
     conv_w: np.ndarray,
     conv_b: np.ndarray,
     dense_w: np.ndarray,
     dense_b: np.ndarray,
+    source_w: np.ndarray,
+    source_b: np.ndarray,
     k_sizes: np.ndarray,
     epochs: int,
     batch_size: int,
@@ -806,8 +916,17 @@ def _train_adam(
     weight_decay: float,
     seed: int,
     backbone_lr_scale: float = 1.0,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Parallel mini-batch AdamW training kernel with cosine annealing LR."""
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
+    """Parallel mini-batch AdamW training kernel with cosine annealing LR and joint 1-bit source head."""
     if seed >= 0:
         np.random.seed(seed)
 
@@ -816,6 +935,12 @@ def _train_adam(
     feat_dim = dense_w.shape[0]
     n_classes = len(dense_b)
     vocab_size, embed_dim = embedding.shape
+
+    has_source = False
+    for i_s in range(len(y_source)):
+        if y_source[i_s] >= 0:
+            has_source = True
+            break
 
     m_emb = np.zeros_like(embedding)
     v_emb = np.zeros_like(embedding)
@@ -827,6 +952,10 @@ def _train_adam(
     v_dw = np.zeros_like(dense_w)
     m_db = np.zeros_like(dense_b)
     v_db = np.zeros_like(dense_b)
+    m_sw = np.zeros_like(source_w)
+    v_sw = np.zeros_like(source_w)
+    m_sb = np.zeros_like(source_b)
+    v_sb = np.zeros_like(source_b)
 
     eff_bs = max(1, min(batch_size, n_samples))
     grad_lut_batch = np.zeros((eff_bs, out_channels, max_k, vocab_size), dtype=np.float32)
@@ -834,12 +963,16 @@ def _train_adam(
     grad_cb_batch = np.zeros((eff_bs, out_channels), dtype=np.float32)
     grad_dw_batch = np.zeros((eff_bs, feat_dim, n_classes), dtype=np.float32)
     grad_db_batch = np.zeros((eff_bs, n_classes), dtype=np.float32)
+    grad_sw_batch = np.zeros((eff_bs, feat_dim), dtype=np.float32)
+    grad_sb_batch = np.zeros(eff_bs, dtype=np.float32)
     sample_losses = np.zeros(eff_bs, dtype=np.float32)
 
     loss_history = np.empty(epochs, dtype=np.float32)
     step = 0
     lut = _compute_lut(embedding, conv_w, k_sizes)
     indices = np.arange(n_samples, dtype=np.int32)
+    inv_n_classes = np.float32(1.0 / float(max(n_classes, 1)))
+    src_lw = np.float32(source_loss_weight)
 
     for epoch in range(epochs):
         epoch_loss = 0.0
@@ -857,6 +990,8 @@ def _train_adam(
                 grad_cb_batch[b].fill(0.0)
                 grad_dw_batch[b].fill(0.0)
                 grad_db_batch[b].fill(0.0)
+                grad_sw_batch[b].fill(0.0)
+                grad_sb_batch[b] = np.float32(0.0)
 
                 i = indices[b_start + b]
                 start = int(offsets[i])
@@ -869,7 +1004,6 @@ def _train_adam(
                 argmax_pos = np.full(out_channels, -1, dtype=np.int32)
                 val = np.empty(out_channels, dtype=np.float32)
                 active_mask = np.zeros((seq_len, out_channels), dtype=np.uint8)
-                tok_counts = np.zeros(vocab_size, dtype=np.float32)
 
                 for pos in range(seq_len):
                     rem = seq_len - pos
@@ -883,7 +1017,6 @@ def _train_adam(
                         lut,
                         conv_b,
                         val,
-                        tok_counts,
                     )
                     for oc in range(out_channels):
                         if k_sizes[oc] <= rem:
@@ -898,11 +1031,9 @@ def _train_adam(
                 _finalize_features_1d(
                     max_val,
                     sum_val,
-                    tok_counts,
                     k_sizes,
                     seq_len,
                     out_channels,
-                    vocab_size,
                     h,
                 )
 
@@ -912,16 +1043,50 @@ def _train_adam(
                 _softmax_1d(logits, max_logit, probs)
 
                 target = int(y_indexed[i])
-                w = class_weights[target] * sample_weights[i]
-                sample_losses[b] = -w * np.log(probs[target] + np.float32(1e-10))
-
                 d_h = np.zeros(feat_dim, dtype=np.float32)
-                for c in range(n_classes):
-                    d_logit = w * (probs[c] - (np.float32(1.0) if c == target else np.float32(0.0)))
-                    grad_db_batch[b, c] += d_logit
+                s_loss = np.float32(0.0)
+
+                if target >= 0:
+                    w = class_weights[target] * sample_weights[i]
+                    s_loss += -w * np.log(probs[target] + np.float32(1e-10))
+                    for c in range(n_classes):
+                        d_logit = w * (probs[c] - (np.float32(1.0) if c == target else np.float32(0.0)))
+                        grad_db_batch[b, c] += d_logit
+                        for j in range(feat_dim):
+                            grad_dw_batch[b, j, c] += h[j] * d_logit
+                            d_h[j] += dense_w[j, c] * d_logit
+                else:
+                    # Negative open-set decoy: KL divergence D_KL(Uniform || P) >= 0 encouraging flat 1/C probabilities
+                    w_neg = sample_weights[i] * np.float32(0.35)
+                    log_inv_c = np.log(inv_n_classes + np.float32(1e-10))
+                    for c in range(n_classes):
+                        s_loss += w_neg * inv_n_classes * (log_inv_c - np.log(probs[c] + np.float32(1e-10)))
+                        d_logit = w_neg * (probs[c] - inv_n_classes)
+                        grad_db_batch[b, c] += d_logit
+                        for j in range(feat_dim):
+                            grad_dw_batch[b, j, c] += h[j] * d_logit
+                            d_h[j] += dense_w[j, c] * d_logit
+
+                src_target = int(y_source[i])
+                if has_source and (src_target == 0 or src_target == 1):
+                    src_logit = source_b[0]
                     for j in range(feat_dim):
-                        grad_dw_batch[b, j, c] += h[j] * d_logit
-                        d_h[j] += dense_w[j, c] * d_logit
+                        src_logit += h[j] * source_w[j]
+                    if src_logit >= np.float32(0.0):
+                        p_src = np.float32(1.0) / (np.float32(1.0) + np.exp(-src_logit))
+                    else:
+                        e_s = np.exp(src_logit)
+                        p_src = e_s / (np.float32(1.0) + e_s)
+                    w_src = src_class_weights[src_target] * sample_weights[i] * src_lw
+                    p_true_src = p_src if src_target == 1 else (np.float32(1.0) - p_src)
+                    s_loss += -w_src * np.log(p_true_src + np.float32(1e-10))
+                    d_src = w_src * (p_src - np.float32(src_target))
+                    grad_sb_batch[b] += d_src
+                    for j in range(feat_dim):
+                        grad_sw_batch[b, j] += h[j] * d_src
+                        d_h[j] += source_w[j] * d_src
+
+                sample_losses[b] = s_loss
 
                 for oc in range(out_channels):
                     k_width = int(k_sizes[oc])
@@ -974,16 +1139,11 @@ def _train_adam(
 
             avg_wd_factor = np.float32(1.0) - lr_epoch * np.float32(weight_decay * 2.0)
             avg_step_size = step_size * np.float32(0.65)
-            global_wd = weight_decay * 5.0 if weight_decay * 5.0 > 2e-3 else 2e-3
-            global_wd_factor = np.float32(1.0) - lr_epoch * np.float32(global_wd)
-            global_step_size = step_size * np.float32(0.15)
             for j in prange(feat_dim):
                 if j < out_channels:
                     eff_wd, eff_step = wd_factor, step_size
-                elif j < 2 * out_channels:
-                    eff_wd, eff_step = avg_wd_factor, avg_step_size
                 else:
-                    eff_wd, eff_step = global_wd_factor, global_step_size
+                    eff_wd, eff_step = avg_wd_factor, avg_step_size
                 for c in range(n_classes):
                     g_sum = np.float32(0.0)
                     for b in range(curr_bs):
@@ -992,6 +1152,26 @@ def _train_adam(
                     m_dw[j, c] = beta1 * m_dw[j, c] + (np.float32(1.0) - beta1) * g
                     v_dw[j, c] = beta2 * v_dw[j, c] + (np.float32(1.0) - beta2) * g * g
                     dense_w[j, c] = dense_w[j, c] * eff_wd - eff_step * m_dw[j, c] / (np.sqrt(v_dw[j, c]) + eps)
+
+            if has_source:
+                g_sb_sum = np.float32(0.0)
+                for b in range(curr_bs):
+                    g_sb_sum += grad_sb_batch[b]
+                g_sb = g_sb_sum * inv_bc
+                m_sb[0] = beta1 * m_sb[0] + (np.float32(1.0) - beta1) * g_sb
+                v_sb[0] = beta2 * v_sb[0] + (np.float32(1.0) - beta2) * g_sb * g_sb
+                source_b[0] -= step_size * m_sb[0] / (np.sqrt(v_sb[0]) + eps)
+
+                for j in prange(feat_dim):
+                    eff_wd = wd_factor if j < out_channels else avg_wd_factor
+                    eff_step = step_size if j < out_channels else avg_step_size
+                    g_sw_sum = np.float32(0.0)
+                    for b in range(curr_bs):
+                        g_sw_sum += grad_sw_batch[b, j]
+                    g_sw = g_sw_sum * inv_bc
+                    m_sw[j] = beta1 * m_sw[j] + (np.float32(1.0) - beta1) * g_sw
+                    v_sw[j] = beta2 * v_sw[j] + (np.float32(1.0) - beta2) * g_sw * g_sw
+                    source_w[j] = source_w[j] * eff_wd - eff_step * m_sw[j] / (np.sqrt(v_sw[j]) + eps)
 
             if bb_lr_scale > np.float32(0.0):
                 for oc in prange(out_channels):
@@ -1055,4 +1235,4 @@ def _train_adam(
 
         loss_history[epoch] = epoch_loss / n_samples
 
-    return embedding, conv_w, conv_b, dense_w, dense_b, loss_history
+    return embedding, conv_w, conv_b, dense_w, dense_b, source_w, source_b, loss_history

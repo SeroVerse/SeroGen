@@ -1027,7 +1027,7 @@ class Loci(GraphBatch[Locus, "Loci"]):
         *,
         by_role: bool = True,
         classifier: Any | None = None,
-        embedding_layer: str = "task_weighted_conv_max",
+        embedding_layer: str = "conv_max",
         **kwargs: Any,
     ) -> Self:
         """Cluster translated locus proteins and return a new `Loci` batch with packed homology `CLUSTER_ID`s."""

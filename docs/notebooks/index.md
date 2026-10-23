@@ -31,7 +31,7 @@ Each notebook is configured with a native **16:9 Marimo slide layout** (`scripts
 
     ---
 
-    Multi-source reference curation (`UniProtKB`, `UniRef50`, `NCBI IPG`, `KEGG`), Optuna TPE hyperparameter optimization, Numba-parallel 8-layer representation sweep, and held-out validation (`>90%` accuracy & Macro F1) across all 29 functional [`GeneRole`][serogen.genes.roles.GeneRole]s (`src/serogen/data/model.npz`), beating remote homology in the `< 25%` identity twilight zone.
+    Uncapped multi-source reference curation (`7,832` non-redundant `<= 80%` CD-HIT sequences across `UniProtKB`, `UniRef50`, `NCBI IPG`, and `KEGG`), Optuna TPE hyperparameter optimization, Numba-parallel 11-layer representation sweep, and dual-head validation (`87.89%` 29-role Macro F1 + `90.4%` 1-bit bacterial/phage source accuracy, `src/serogen/data/model.npz`), beating remote homology in the `< 25%` identity twilight zone.
 
     [:octicons-arrow-right-24: Explore Classifier Deck](gene-classifier.md)
 

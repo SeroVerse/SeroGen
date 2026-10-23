@@ -194,15 +194,22 @@ def test_gene_role_classifier_transform_and_int64_labels(tmp_path: Path) -> None
         batch_size=2,
         random_state=42,
     )
-    base_clf.fit(seqs, y_large, sample_weight=sample_w)
+    base_clf.fit(seqs, y_large, sample_weight=sample_w, y_source=[0, 0, 1, 1])
     assert base_clf.classes_.dtype == np.int64
     assert list(base_clf.classes_) == [tag_a, tag_b]
     assert base_clf.score(seqs, y_large) == 1.0
+    assert base_clf.feature_dim == 2 * base_clf.num_filters
 
     feats = base_clf.transform(seqs)
     assert feats.shape == (4, base_clf.feature_dim)
+    embed_mean = base_clf.transform(seqs, layer="embed_mean")
+    assert embed_mean.shape == (4, base_clf.embed_dim)
     manual_logits = feats @ base_clf.dense_w_ + base_clf.dense_b_
     assert np.allclose(manual_logits, base_clf.decision_function(seqs), atol=1e-5)
+
+    src_probs = base_clf.predict_source_proba(seqs)
+    assert src_probs.shape == (4,)
+    assert list(base_clf.predict_source(seqs)) == [0, 0, 1, 1]
 
     fine_clf = GeneRoleClassifier(
         embed_dim=8,
@@ -222,6 +229,7 @@ def test_gene_role_classifier_transform_and_int64_labels(tmp_path: Path) -> None
     reloaded = GeneRoleClassifier.load(p)
     assert reloaded.classes_.dtype == np.int64
     assert list(reloaded.predict(seqs)) == list(y_large)
+    assert np.allclose(reloaded.predict_source_proba(seqs), src_probs, atol=1e-5)
 
 
 def test_locus_and_loci_soa_and_graph_operations() -> None:

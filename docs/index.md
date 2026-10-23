@@ -39,11 +39,11 @@ Built on zero-copy Structure-of-Arrays (SoA) containers and parallel Numba JIT k
 
 <div class="grid cards" markdown>
 
--   :lucide-cpu: **Polysaccharide-Specific CNN Classification vs. Remote Homology**
+-   :lucide-cpu: **Polysaccharide-Specific Dual-Head CNN (29 Roles + Phage Detection)**
 
     ---
 
-    Surface antigen machinery (`Wzx` flippases, `Wzy` polymerases, `WaaL` ligases, and glycosyltransferases) routinely diverges below `20–25%` amino-acid identity where `BLAST`/`MMseqs2` fail. [`GeneRoleClassifier`][serogen.genes.cnn.GeneRoleClassifier] combines multi-scale 1D convolutional motif filters (`DxD`, `ED`, `EX7E`, Rossmann loops) with a 20-D biophysical composition/hydropathy/charge head across **29 functional [`GeneRole`][serogen.genes.roles.GeneRole]s** (+ open-set `UNKNOWN`).
+    Surface antigen machinery (`Wzx` flippases, `Wzy` polymerases, `WaaL` ligases, and glycosyltransferases) routinely diverges below `20–25%` amino-acid identity where `BLAST`/`MMseqs2` fail. [`GeneRoleClassifier`][serogen.genes.cnn.GeneRoleClassifier] pairs multi-scale 1D convolutional motif filters (`k = 5, 9, 13 aa`; `DxD`, `ED`, `EX7E`, Rossmann loops) with dual `[conv_max, conv_avg]` pooling across **29 functional [`GeneRole`][serogen.genes.roles.GeneRole]s** (+ open-set `UNKNOWN` biological decoy rejection) and a joint **1-bit bacterial vs. bacteriophage/prophage origin head** (`predict_source` / `predict_source_proba`).
 
 -   :lucide-boxes: **Smart Hybrid Clustering & CNN-Rescued MCL**
 

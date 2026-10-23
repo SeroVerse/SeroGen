@@ -84,6 +84,11 @@ jobs:
               for cd in cell_datas:
                   session_view.last_executed_code[cd.cell_id] = cd.code
               layout = _resolve_and_inline_layout(file_manager.app)
+              if layout is not None and isinstance(layout.data, dict) and "cells" in layout.data:
+                  layout.data["cells"] = [
+                      {"id": cd.cell_id, "code_hash": hash_code(cd.code)}
+                      for cd in cell_datas
+                  ]
               config = get_default_config_manager(current_path=file_manager.path)
               resolved = config.get_config()
               snapshot = NotebookExportSnapshot(

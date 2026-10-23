@@ -27,6 +27,7 @@ nav = [
     { "serogen.loci" = "reference/loci.md" },
   ] },
   { "Community" = [
+    "citation.md",
     "conduct.md",
     "contributing.md",
     "releases.md",
@@ -139,6 +140,7 @@ full_output = "llms-full.txt"
   { "reference/loci.md" = "serogen.loci: LocusSegmenter, LocusMatcher, LocusPredictor, and Locus/Loci models" },
 ]
 "Community" = [
+  { "citation.md" = "How to cite SeroGen in academic publications" },
   { "conduct.md" = "Contributor Covenant Code of Conduct" },
   { "contributing.md" = "Local development setup, testing, and pull request guidelines" },
   { "releases.md" = "Version history and changelog" },
