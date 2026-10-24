@@ -120,13 +120,15 @@ class GeneNode(IntNode):
 
     Bit 0..4 (5 bits):   Canonical `GeneRole` index (`0..29`).
     Bit 5 (1 bit):       Frameshift / pseudogene indicator (`0` = intact, `1` = frameshifted).
-    Bit 6..30 (25 bits): Sequence homology cluster ID (`0` = unclustered, `1..33,554,431` = cluster ID).
+    Bit 6 (1 bit):       Phage / prophage source indicator (`0` = bacterial, `1` = phage/prophage).
+    Bit 7..30 (24 bits): Sequence homology cluster ID (`0` = unclustered, `1..16,777,215` = cluster ID).
     Bit 31 (1 bit):      `TAG_EDGE` (`0` = primary gene node).
     """
 
     ROLE_ID = BitField(shift=0, width=5)
     IS_FRAMESHIFT = BitField(shift=5, width=1)
-    CLUSTER_ID = BitField(shift=6, width=25)
+    IS_PHAGE = BitField(shift=6, width=1)
+    CLUSTER_ID = BitField(shift=7, width=24)
     TAG_EDGE = BitField(shift=31, width=1)
 
     def __new__(
@@ -134,12 +136,14 @@ class GeneNode(IntNode):
         val_or_role: int | str | bytes | GeneRole,
         cluster_id: int | None = None,
         is_frameshift: bool = False,
+        is_phage: bool = False,
     ) -> Self:
         if (
             isinstance(val_or_role, (int, np.integer))
             and not isinstance(val_or_role, GeneRole)
             and cluster_id is None
             and not is_frameshift
+            and not is_phage
             and int(val_or_role) >= len(GeneRole)
         ):
             return super().__new__(cls, int(val_or_role))
@@ -147,7 +151,10 @@ class GeneNode(IntNode):
         role_enum = GeneRole.resolve(val_or_role) if not isinstance(val_or_role, GeneRole) else val_or_role
         cid = 0 if cluster_id is None else int(cluster_id)
         packed = (
-            cls.ROLE_ID.pack(int(role_enum)) | cls.IS_FRAMESHIFT.pack(int(is_frameshift)) | cls.CLUSTER_ID.pack(cid)
+            cls.ROLE_ID.pack(int(role_enum))
+            | cls.IS_FRAMESHIFT.pack(int(is_frameshift))
+            | cls.IS_PHAGE.pack(int(is_phage))
+            | cls.CLUSTER_ID.pack(cid)
         )
         return super().__new__(cls, packed)
 
@@ -165,6 +172,11 @@ class GeneNode(IntNode):
     def is_frameshift(self) -> bool:
         """True if this gene contains a frameshift indel or premature stop."""
         return bool(self.IS_FRAMESHIFT)
+
+    @property
+    def is_phage(self) -> bool:
+        """True if this gene is predicted to be of bacteriophage/prophage origin."""
+        return bool(self.IS_PHAGE)
 
     @property
     def cluster_id(self) -> int:
@@ -194,8 +206,9 @@ class GeneNode(IntNode):
     def __repr__(self) -> str:
         r_abbr = self.role.abbreviation
         fs = ",FS" if self.is_frameshift else ""
+        ph = ",phage" if self.is_phage else ""
         cid = f",c={self.cluster_id}" if self.cluster_id > 0 else ""
-        return f"GeneNode({r_abbr}{cid}{fs})"
+        return f"GeneNode({r_abbr}{cid}{fs}{ph})"
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -324,6 +337,14 @@ class Locus(GraphModel):
             return np.empty(0, dtype=np.bool_)
         arr = np.fromiter((int(n) for n in self.nodes), dtype=np.uint32, count=len(self.nodes))
         return GeneNode.IS_FRAMESHIFT.extract_array(arr).astype(np.bool_)
+
+    @property
+    def is_phage(self) -> np.ndarray[tuple[int], np.dtype[np.bool_]]:
+        """1D boolean array indicating which genes are predicted to be of bacteriophage/prophage origin."""
+        if not self.nodes:
+            return np.empty(0, dtype=np.bool_)
+        arr = np.fromiter((int(n) for n in self.nodes), dtype=np.uint32, count=len(self.nodes))
+        return GeneNode.IS_PHAGE.extract_array(arr).astype(np.bool_)
 
     @property
     def role_mask(self) -> int:
@@ -510,6 +531,7 @@ class Locus(GraphModel):
         lengths: Sequence[int] | np.ndarray | None = None,
         clusters: Sequence[int] | np.ndarray | None = None,
         frameshifts: Sequence[bool] | np.ndarray | None = None,
+        is_phage: Sequence[bool] | np.ndarray | None = None,
         archetype: LocusArchetype = LocusArchetype.UNKNOWN,
         completeness: float = 0.0,
         score: float = 0.0,
@@ -529,7 +551,7 @@ class Locus(GraphModel):
                 role_ids = roles.astype(np.int32, copy=False)
             else:
                 role_ids = np.array(
-                    [int(GeneRole.label(r) if isinstance(r, (str, bytes)) else GeneRole.resolve(r)) for r in roles],
+                    [int(GeneRole.resolve(r)) for r in roles],
                     dtype=np.int32,
                 )
             fs_arr = np.asarray(frameshifts, dtype=np.bool_) if frameshifts is not None else genes_obj.has_frameshift
@@ -542,20 +564,14 @@ class Locus(GraphModel):
 
             if roles is not None:
                 role_ids = np.array(
-                    [int(GeneRole.label(r) if isinstance(r, (str, bytes)) else GeneRole.resolve(r)) for r in roles],
+                    [int(GeneRole.resolve(r)) for r in roles],
                     dtype=np.int32,
                 )
             else:
-                role_ids = np.empty(n, dtype=np.int32)
-                for i, item in enumerate(raw_list):
-                    if isinstance(item, (GeneRole, int, np.integer)):
-                        role_ids[i] = int(item)
-                    else:
-                        s_item = item.decode("utf-8", errors="replace") if isinstance(item, bytes) else str(item)
-                        try:
-                            role_ids[i] = int(GeneRole.from_name(s_item))
-                        except KeyError:
-                            role_ids[i] = int(GeneRole.label(s_item))
+                role_ids = np.array(
+                    [int(GeneRole.resolve(item)) for item in raw_list],
+                    dtype=np.int32,
+                )
 
             strands_arr = np.asarray(strands, dtype=np.int8) if strands is not None else np.ones(n, dtype=np.int8)
             lengths_arr = (
@@ -573,9 +589,16 @@ class Locus(GraphModel):
             c_idx = contig_index
 
         cluster_arr = np.asarray(clusters, dtype=np.int32) if clusters is not None else np.zeros(n, dtype=np.int32)
+        phage_arr = np.asarray(is_phage, dtype=np.bool_) if is_phage is not None else np.zeros(n, dtype=np.bool_)
 
         nodes = tuple(
-            GeneNode(int(role_ids[i]), cluster_id=int(cluster_arr[i]), is_frameshift=bool(fs_arr[i])) for i in range(n)
+            GeneNode(
+                int(role_ids[i]),
+                cluster_id=int(cluster_arr[i]),
+                is_frameshift=bool(fs_arr[i]),
+                is_phage=bool(phage_arr[i]),
+            )
+            for i in range(n)
         )
 
         g_starts = genes_obj.intervals.starts
@@ -718,6 +741,11 @@ class Loci(GraphBatch[Locus, "Loci"]):
     def cluster_ids(self) -> np.ndarray[tuple[int], np.dtype[np.int32]]:
         """Flat 1D array of homology `cluster_id` values across all gene nodes in the batch."""
         return GeneNode.CLUSTER_ID.extract_array(self.node_types).astype(np.int32)
+
+    @property
+    def is_phage(self) -> np.ndarray[tuple[int], np.dtype[np.bool_]]:
+        """Flat 1D boolean array indicating which gene nodes across the batch are of bacteriophage/prophage origin."""
+        return GeneNode.IS_PHAGE.extract_array(self.node_types).astype(np.bool_)
 
     @property
     def is_fragmented(self) -> np.ndarray[tuple[int], np.dtype[np.bool_]]:

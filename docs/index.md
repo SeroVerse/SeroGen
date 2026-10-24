@@ -134,7 +134,7 @@ flowchart LR
         contigs = reader.load()
 
     # Decode bacterial ORFs, frameshifted pseudogenes, 1-bp/4-bp overlaps, and prophage ORFs in one pass
-    predictor = OrfPredictor(include_phage=True)
+    predictor = OrfPredictor()
     genes = predictor.predict(contigs)
 
     print(f"Predicted {len(genes):,} ORFs ({int(genes.is_frameshift.sum())} frameshifted)")
@@ -149,5 +149,5 @@ flowchart LR
 | :--- | :--- | :--- |
 | **2-Bit DNA Encoding** | [`Alphabet.DNA.encode`][serogen.core.seq.alphabet.Alphabet.encode] | **`0.38 ms`** (`12.2 GB/s` via Numba LUT) |
 | **Ragged Protein Translation** | [`GeneticCode.translate_ragged`][serogen.core.seq.alphabet.GeneticCode.translate_ragged] | **`0.61 ms`** (`4,968` CDSs) |
-| **29-State Frameshift-Aware Bacterial ORFs** | [`OrfPredictor(include_phage=False)`][serogen.genes.orf.predictor.OrfPredictor] | **`59.6 ms`** (`78.1 Mb/s`) |
-| **Single-Pass Bacterial + Prophage ORFs** | [`OrfPredictor(include_phage=True)`][serogen.genes.orf.predictor.OrfPredictor] | **`70.9 ms`** (`65.7 Mb/s`) |
+| **29-State Frameshift-Aware ORFs (Global GC)** | [`OrfPredictor(local_gc_window=0)`][serogen.genes.orf.predictor.OrfPredictor] | **`59.6 ms`** (`78.1 Mb/s`) |
+| **Single-Pass Sliding 4-kb Local GC ORFs** | [`OrfPredictor()`][serogen.genes.orf.predictor.OrfPredictor] | **`64.0 ms`** (`72.8 Mb/s`) |

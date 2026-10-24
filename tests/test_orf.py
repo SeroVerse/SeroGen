@@ -116,39 +116,30 @@ def test_orf_predictor_mid_orf_contig_split_and_partial_flag(
         assert len(c0_genes[-1].seq) == len(c0_genes[-1].interval)
 
 
-def test_viral_genetic_codes_and_phage_orf_prediction(
+def test_genetic_codes_and_local_gc_orf_prediction(
     sgh10_assembly: GenomeAssembly,
 ) -> None:
-    """Viral translation tables and single-pass phage-aware OrfPredictor must decode and translate accurately."""
+    """Standard and bacterial translation tables and local-GC OrfPredictor must decode and translate accurately."""
+    assert GeneticCode.from_table(1) is GeneticCode.standard
+    assert GeneticCode.from_table("standard") is GeneticCode.standard
     assert GeneticCode.from_table(11) is GeneticCode.bacterial
-    assert GeneticCode.from_table("viral") is GeneticCode.viral
-    assert GeneticCode.from_table(15) is GeneticCode.viral_amber_q
-    assert GeneticCode.from_table(4) is GeneticCode.viral_opal_w
-    assert GeneticCode.from_table(25) is GeneticCode.viral_opal_g
+    assert GeneticCode.from_table("bacterial") is GeneticCode.bacterial
 
     cds = Sequence(b"cod", b"ATGAAATAGAAATGA")
-    assert bytes(cds.translate(code=GeneticCode.viral, to_stop=False).seq) == b"MK*K*"
-    assert bytes(cds.translate(code=GeneticCode.viral_amber_q, to_stop=False).seq) == b"MKQK*"
-    assert bytes(cds.translate(code=GeneticCode.viral_opal_w, to_stop=False).seq) == b"MK*KW"
-    assert bytes(cds.translate(code=GeneticCode.viral_opal_g, to_stop=False).seq) == b"MK*KG"
-
-    assert int(np.sum(GeneticCode.viral.stop_mask_64)) == 3
-    assert int(np.sum(GeneticCode.viral_amber_q.stop_mask_64)) == 2
-    assert int(np.sum(GeneticCode.viral_opal_w.stop_mask_64)) == 2
-    assert int(np.sum(GeneticCode.viral_opal_g.stop_mask_64)) == 2
+    assert bytes(cds.translate(code=GeneticCode.bacterial, to_stop=False).seq) == b"MK*K*"
+    assert bytes(cds.translate(code=GeneticCode.standard, to_stop=False).seq) == b"MK*K*"
+    assert int(np.sum(GeneticCode.bacterial.stop_mask_64)) == 3
+    assert int(np.sum(GeneticCode.standard.stop_mask_64)) == 3
 
     sub_seq = sgh10_assembly[0].seq[:100_000]
-    pred_phage = OrfPredictor(genetic_code=GeneticCode.viral, include_phage=True)
-    pred_bact = OrfPredictor(genetic_code=GeneticCode.bacterial, include_phage=False)
+    pred = OrfPredictor(genetic_code=GeneticCode.bacterial, min_gene_len=120, local_gc_window=4_000)
+    genes = pred.predict(sub_seq)
 
-    genes_phage = pred_phage.predict(sub_seq)
-    genes_bact = pred_bact.predict(sub_seq)
-
-    assert genes_phage.genetic_code is GeneticCode.viral
-    assert len(genes_phage) >= len(genes_bact)
-    assert np.all(genes_phage.seqs.lengths % 3 == 0)
-    assert np.all(genes_phage.seqs.lengths >= 90)
-    assert len(genes_phage.translations) == len(genes_phage)
+    assert genes.genetic_code is GeneticCode.bacterial
+    assert len(genes) > 50
+    assert np.all(genes.seqs.lengths % 3 == 0)
+    assert np.all(genes.seqs.lengths >= 120)
+    assert len(genes.translations) == len(genes)
 
 
 def test_orf_predictor_frameshift_and_stop_readthrough(

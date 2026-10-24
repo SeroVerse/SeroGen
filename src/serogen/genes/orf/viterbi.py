@@ -152,7 +152,6 @@ def _avoid_insertion_stop(
 def _viterbi_forward(
     seq: np.ndarray,
     cg_bins: np.ndarray,
-    include_phage: bool,
     tr: np.ndarray,
     tr_mi: np.ndarray,
     tr_ii: np.ndarray,

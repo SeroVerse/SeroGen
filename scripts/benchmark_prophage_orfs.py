@@ -164,39 +164,38 @@ def _(FastaReader, Path, np, re, urllib):
 def _(GeneticCode, OrfPredictor, PROPHAGES, genome_len, genome_seq, np, raw_bytes, ref_cds, time):
     # Warm up Numba JIT compilation before timing
     _warmup_seq = genome_seq.seq[:20_000]
-    OrfPredictor(genetic_code=GeneticCode.bacterial, include_phage=False, min_gene_len=120).predict(_warmup_seq)
-    OrfPredictor(genetic_code=GeneticCode.viral, include_phage=True).predict(_warmup_seq)
+    OrfPredictor(genetic_code=GeneticCode.bacterial, local_gc_window=0).predict(_warmup_seq)
+    OrfPredictor(genetic_code=GeneticCode.bacterial, local_gc_window=4_000).predict(_warmup_seq)
 
-    # 1. Baseline Bacterial-Only Mode (Table 11, include_phage=False, min_gene_len=120)
+    # 1. Baseline Global-GC Mode (Table 11, local_gc_window=0, min_gene_len=120)
     _t0 = time.perf_counter()
     pred_baseline = OrfPredictor(
         genetic_code=GeneticCode.bacterial,
-        include_phage=False,
         min_gene_len=120,
+        local_gc_window=0,
     )
     genes_baseline = pred_baseline.predict(genome_seq)
     time_baseline = time.perf_counter() - _t0
 
-    # 2. Single-Pass Phage-Aware Mode (GeneticCode.viral, include_phage=True, min_gene_len=90, local_gc_window=4000)
+    # 2. Default Sliding 4-kb Local-GC Mode (Table 11, local_gc_window=4000, min_gene_len=120)
     _t0 = time.perf_counter()
     pred_phage = OrfPredictor(
-        genetic_code=GeneticCode.viral,
-        include_phage=True,
+        genetic_code=GeneticCode.bacterial,
+        min_gene_len=120,
+        local_gc_window=4_000,
     )
     genes_phage = pred_phage.predict(genome_seq)
     time_phage = time.perf_counter() - _t0
 
-    # 3. Alternative Viral Genetic Codes (Table 15 Amber TAG->Q, Table 4 Opal TGA->W, Table 25 Opal TGA->G)
+    # 3. Genetic Code & Window Mode Throughput Comparison (Table 11 Bacterial vs Table 1 Standard)
     alt_code_timings = []
-    for _code_label, _code_obj in [
-        ("Table 11 (Bacterial)", GeneticCode.bacterial),
-        ("Table 11 (Viral)", GeneticCode.viral),
-        ("Table 15 (Viral Amber TAG->Q)", GeneticCode.viral_amber_q),
-        ("Table 4 (Viral Opal TGA->W)", GeneticCode.viral_opal_w),
-        ("Table 25 (Viral Opal TGA->G)", GeneticCode.viral_opal_g),
+    for _code_label, _code_obj, _gc_win in [
+        ("Table 11 (Bacterial, 4-kb Local GC)", GeneticCode.bacterial, 4_000),
+        ("Table 11 (Bacterial, Global GC)", GeneticCode.bacterial, 0),
+        ("Table 1 (Standard, 4-kb Local GC)", GeneticCode.standard, 4_000),
     ]:
         _t_start = time.perf_counter()
-        _g = OrfPredictor(genetic_code=_code_obj, include_phage=True).predict(genome_seq)
+        _g = OrfPredictor(genetic_code=_code_obj, local_gc_window=_gc_win).predict(genome_seq)
         _dt = time.perf_counter() - _t_start
         alt_code_timings.append(
             {
@@ -211,7 +210,7 @@ def _(GeneticCode, OrfPredictor, PROPHAGES, genome_len, genome_seq, np, raw_byte
     _two_pass_time = time_baseline + time_phage
     alt_code_timings.append(
         {
-            "mode": "Naive Two-Pass (Bacterial + Viral)",
+            "mode": "Naive Two-Pass (Host + Prophage)",
             "pass_type": "Two-Pass",
             "time_s": round(_two_pass_time, 4),
             "throughput_mb_s": round((genome_len / 1e6) / _two_pass_time, 2),
@@ -633,9 +632,9 @@ def _(
             ),
             mo.callout(
                 mo.md(
-                    "**Key Takeaway**: Standard bacterial ORF callers miss small, AT-rich, and tightly overlapping prophage genes "
-                    "(such as seroconverting bacteriophage *gtrABC* and *oac* cassettes). `OrfPredictor(include_phage=True)` "
-                    "recovers **95.6%** of prophage 3'-stops and **79.3%** of exact 5'+3' boundaries in a single pass with zero two-pass overhead."
+                    "**Key Takeaway**: Cryptic and lambdoid prophages exhibit sharp local GC shifts relative to the host chromosome. "
+                    "Unified `OrfPredictor` (`GeneticCode.bacterial`, 4-kb sliding local GC window, faithful 29-state `FragGeneScanRs` Viterbi) "
+                    "co-predicts bacterial and prophage ORFs in a single pass with zero two-pass overhead."
                 ),
                 kind="success",
             ),

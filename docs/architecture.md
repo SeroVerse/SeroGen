@@ -68,15 +68,13 @@ classDiagram
 
 ## 2. Single-Pass 29-State Bacterial & Prophage ORF Calling (`serogen.genes.orf`)
 
-[`OrfPredictor`][serogen.genes.orf.predictor.OrfPredictor] combines sliding local GC adaptation with an unconditional 29-state frameshift- and operon-overlap-aware profile-HMM Viterbi decoder:
+[`OrfPredictor`][serogen.genes.orf.predictor.OrfPredictor] combines sliding local GC adaptation with a unified, single-mode 29-state frameshift- and operon-overlap-aware profile-HMM Viterbi decoder (`FragGeneScanRs` port):
 
 1. **Precomputed 64-State Trinucleotide LUT**: [`Alphabet.DNA.encode`][serogen.core.seq.alphabet.Alphabet.encode] maps raw ASCII FASTA bytes into 2-bit integers (`0..3`) via a Numba LUT kernel, and builds a 1D array of 6-bit trinucleotide indices (`0..63`) shared across the Viterbi pass and downstream extraction passes.
-2. **Sliding 4-kb Prefix-Sum Local GC Adaptation**: Computes a 4-kb local GC bin (`0..43`) at every nucleotide via $O(1)$ prefix sums so codon log-odds adapt seamlessly across AT-rich polysaccharide islands and integrated prophages (`34%–44%` GC) embedded inside higher-GC host chromosomes.
+2. **Sliding 4-kb Prefix-Sum Local GC Adaptation**: Computes a 4-kb local GC bin (`0..43`) at every nucleotide via $O(1)$ prefix sums (`local_gc_window=4_000`) so codon log-odds adapt seamlessly across AT-rich polysaccharide islands and integrated prophages (`34%–44%` GC) embedded inside higher-GC host chromosomes.
 3. **29-State Frameshift & Operon-Overlap Profile-HMM**:
    - Models forward and reverse coding phases alongside 12 explicit frameshift indel states (`1-bp` and `2-bp` insertions/deletions) to read through sequencing errors and frameshifted pseudogenes (`IS_FRAMESHIFT`) without splitting the ORF.
    - Models direct `1-bp` (`TGATG`/`TAATG`) and `4-bp` (`ATGA`) translational coupling overlaps via dedicated stop-to-start transitions (`E → M1` and `Er → M1r`), scored by upstream Shine-Dalgarno RBS binding energy and start-codon context.
-4. **Single-Pass Viral/Prophage Rescue (`include_phage=True`)**:
-   - Without running a second Viterbi pass, [`OrfPredictor.predict`][serogen.genes.orf.predictor.OrfPredictor.predict] scans unannotated gaps and out-of-frame operon regions (`-25 bp` to `+60 bp` overlap window) using background-subtracted codon log-likelihoods (`coding_ll - noncoding_ll`) and local AT-enrichment scaling to recover seroconverting bacteriophage cassettes (*gtrABC*, *oac*) and short phage accessory ORFs (`90–120 bp`).
 
 ---
 
@@ -113,7 +111,7 @@ Why does SeroGen use a domain-specific neural architecture ([`GeneRoleClassifier
 Every biosynthetic locus and pan-locus database in SeroGen is modeled as a directed attributed graph in [`serogen.core.graph`](reference/core.md):
 
 - **Bit-Packed 32-Bit Nodes & Edges ([`models.py`][serogen.core.graph.models])**:
-  - [`IntNode`][serogen.core.graph.models.IntNode] and [`BitField`][serogen.core.graph.models.BitField] pack multi-attribute biological descriptors into primitive `uint32` integers for zero-allocation array operations. [`GeneNode`][serogen.loci.models.GeneNode] packs `CLUSTER_ID` (16 bits), `ROLE_ID` (6 bits), `STRAND` (1 bit), `IS_FRAMESHIFT` (1 bit), and `TAG_EDGE` (bit 31); [`IntergenicType`][serogen.loci.models.IntergenicType] packs `ORIENTATION` (2 bits: co-directional, convergent, divergent) and `GAP_BIN` (4 bits, including contig-break bin `14`).
+  - [`IntNode`][serogen.core.graph.models.IntNode] and [`BitField`][serogen.core.graph.models.BitField] pack multi-attribute biological descriptors into primitive `uint32` integers for zero-allocation array operations. [`GeneNode`][serogen.loci.models.GeneNode] packs `ROLE_ID` (5 bits, `0..29`), `IS_FRAMESHIFT` (1 bit), `IS_PHAGE` (1 bit, populated by [`GeneRoleClassifier.predict_source`][serogen.genes.cnn.GeneRoleClassifier.predict_source]), `CLUSTER_ID` (24 bits), and `TAG_EDGE` (bit 31); [`IntergenicType`][serogen.loci.models.IntergenicType] packs `ORIENTATION` (2 bits: co-directional, convergent, divergent) and `GAP_BIN` (4 bits, including contig-break bin `14`).
   - [`GraphModel`][serogen.core.graph.models.GraphModel] provides `.as_graph(as_bipartite=..., symmetrize=...)`, normalized Laplacian eigenvalue spectra (`.laplacian_spectrum()`), and topological Wasserstein-1 Earth Mover's distance (`.spectral_distance()`).
   - [`GraphBatch`][serogen.core.graph.models.GraphBatch] (the base class of [`Loci`][serogen.loci.models.Loci]) stores thousands of variable-size graphs in flat contiguous SoA arrays (`node_types`, `node_offsets`, `edge_sources`, `edge_targets`, `edge_types`, `edge_offsets`) with parallel Numba slicing (`_slice_graph_batch_kernel`), block-diagonal CSR generation, all-vs-all Wasserstein distance matrices, and **`.as_pan_graph(node_mask=...)`** to compress a batch of loci into a unified directed consensus pan-locus network.
 - **Weisfeiler-Lehman + Hungarian Bipartite Graph Alignment ([`align.py`][serogen.core.graph.align])**:

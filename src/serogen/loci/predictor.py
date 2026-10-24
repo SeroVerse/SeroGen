@@ -15,39 +15,6 @@ from serogen.loci.classifier import ArchetypeClassifier
 from serogen.loci.models import Loci
 from serogen.loci.segmenter import LocusSegmenter
 
-# Biological minimum amino-acid lengths for intact (non-partial) ORFs per GeneRole
-_ROLE_MIN_AA_LEN: dict[GeneRole, int] = {
-    GeneRole.FLIPPASE: 240,
-    GeneRole.POLYMERASE: 240,
-    GeneRole.COPOLYMERASE: 185,
-    GeneRole.KINASE: 185,
-    GeneRole.PHOSPHATASE: 110,
-    GeneRole.ABC_PERMEASE: 185,
-    GeneRole.ABC_ATPASE: 185,
-    GeneRole.LIGASE: 250,
-    GeneRole.TRANSLOCON: 250,
-    GeneRole.CAPSULE_ANCHOR: 280,
-    GeneRole.PYRUVYLTRANSFERASE: 180,
-    GeneRole.METHYLTRANSFERASE: 130,
-    GeneRole.ACETYLTRANSFERASE: 105,
-    GeneRole.PHOSPHOTRANSFERASE: 150,
-    GeneRole.FORMYLTRANSFERASE: 160,
-    GeneRole.ALANINE_TRANSFERASE: 180,
-    GeneRole.AMINOTRANSFERASE: 240,
-    GeneRole.ALDOLASE: 180,
-    GeneRole.DEACETYLASE: 150,
-    GeneRole.EPIMERASE: 180,
-    GeneRole.OXIDOREDUCTASE: 180,
-    GeneRole.TRANSMEMBRANE_SYNTHASE: 310,
-    GeneRole.NUCLEOTIDYLTRANSFERASE: 160,
-    GeneRole.NUCLEOTIDASE: 130,
-    GeneRole.INITIATOR: 175,
-    GeneRole.GLYCOSYLHYDROLASE: 180,
-    GeneRole.GLYCOSYLTRANSFERASE: 150,
-    GeneRole.TRANSPOSASE: 80,
-    GeneRole.INTEGRASE: 150,
-}
-
 
 class LocusPredictor:
     """High-level biosynthetic gene cluster (BGC) discovery and segmentation pipeline.
@@ -164,21 +131,6 @@ class LocusPredictor:
             full_probs[:, classes] = norm_cleaned * active_mass
             full_probs[:, int(GeneRole.UNKNOWN)] = np.clip(1.0 - full_probs[:, classes].sum(axis=1), 1e-12, 1.0)
 
-        # Enforce biological minimum amino-acid length constraints on intact (non-partial) ORFs
-        if len(bp_lengths) == n_genes and np.any(bp_lengths > 0):
-            for role_enum, min_aa in _ROLE_MIN_AA_LEN.items():
-                short_r_mask = (~partials) & (aa_lengths > 0) & (aa_lengths < min_aa)
-                if np.any(short_r_mask):
-                    r_idx = int(role_enum)
-                    shifted = full_probs[short_r_mask, r_idx].copy()
-                    full_probs[short_r_mask, r_idx] = 1e-12
-                    full_probs[short_r_mask, int(GeneRole.UNKNOWN)] += shifted
-
-            tiny_orf_mask = (~partials) & (bp_lengths > 0) & (bp_lengths < 210)
-            if np.any(tiny_orf_mask):
-                full_probs[tiny_orf_mask, :] = 1e-12
-                full_probs[tiny_orf_mask, int(GeneRole.UNKNOWN)] = 0.99
-
         full_probs /= full_probs.sum(axis=1, keepdims=True)
         return full_probs
 
@@ -206,7 +158,7 @@ class LocusPredictor:
                     if len(target.is_partial) == len(target)
                     else np.zeros(len(target), dtype=np.bool_)
                 )
-                keep_mask = partials | (target.intervals.lengths >= 210)
+                keep_mask = partials | (target.intervals.lengths >= self.orf_predictor.min_gene_len)
                 genes = target[keep_mask] if not bool(np.all(keep_mask)) else target
             else:
                 genes = target
@@ -216,7 +168,8 @@ class LocusPredictor:
             return Loci.empty()
 
         role_probs = self.predict_role_probabilities(genes)
-        loci = self.segmenter.segment(genes, role_probs)
+        is_phage = self.role_classifier.predict_source(genes) == 1
+        loci = self.segmenter.segment(genes, role_probs, is_phage=is_phage)
         if heal_mobile_elements and len(loci) > 0:
             loci = loci.heal_mobile_elements(remove_nodes=True)
         if (

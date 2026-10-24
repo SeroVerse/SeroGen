@@ -238,7 +238,7 @@ def test_locus_and_loci_soa_and_graph_operations() -> None:
         [
             Locus.from_genes(["wza", "wzb", "wzc", "wzx", "wzy", "wbaP"], strands=[1, 1, 1, 1, 1, 1]),
             Locus.from_genes(["wzm", "wzt", "rmlA", "rmlB"], strands=[-1, -1, -1, -1]),
-            Locus.from_genes(["wzx", "wzy", "wzz", "wbaP", "tnpA", "rmlC"], strands=[1, 1, 1, 1, 1, 1]),
+            Locus.from_genes(["wzx", "wzy", "wzz", "wbaP", "tnp", "rmlC"], strands=[1, 1, 1, 1, 1, 1]),
         ]
     )
     assert len(loci) == 3
@@ -392,7 +392,7 @@ def test_locus_predictor_mge_bridging_and_healing() -> None:
 
 
 def test_sgh10_tandem_k1_o1() -> None:
-    """Verify exact K1 Capsule + O1 O-Antigen tandem segmentation on SGH10."""
+    """Verify exact K1 Capsule + O1 O-Antigen tandem segmentation and 20/20 KL1 roles on SGH10."""
     sgh10_path = Path(__file__).parent / "data" / "SGH10_chromosome.fna.zst"
     if sgh10_path.exists():
         asm = GenomeAssembly.from_file(sgh10_path)
@@ -404,16 +404,43 @@ def test_sgh10_tandem_k1_o1() -> None:
         assert len(region_loci) == 2
         k1, o1 = region_loci[0], region_loci[1]
         assert k1.archetype == LocusArchetype.CPS_WZY
-        assert k1.start == 1_706_482
+        assert k1.start == 1_706_476
         assert k1.end == 1_731_461
         assert k1.strand == 1
         assert k1.is_tandem_split is True
+        assert k1.is_phage.shape == (k1.num_genes,)
+
+        expected_kl1_roles = [
+            GeneRole.NUCLEOTIDYLTRANSFERASE,
+            GeneRole.PHOSPHATASE,
+            GeneRole.CAPSULE_ANCHOR,
+            GeneRole.TRANSLOCON,
+            GeneRole.PHOSPHATASE,
+            GeneRole.KINASE,
+            GeneRole.FLIPPASE,
+            GeneRole.PYRUVYLTRANSFERASE,
+            GeneRole.POLYMERASE,
+            GeneRole.GLYCOSYLTRANSFERASE,
+            GeneRole.ACETYLTRANSFERASE,
+            GeneRole.OXIDOREDUCTASE,
+            GeneRole.OXIDOREDUCTASE,
+            GeneRole.NUCLEOTIDASE,
+            GeneRole.GLYCOSYLTRANSFERASE,
+            GeneRole.INITIATOR,
+            GeneRole.OXIDOREDUCTASE,
+            GeneRole.NUCLEOTIDYLTRANSFERASE,
+            GeneRole.EPIMERASE,
+            GeneRole.OXIDOREDUCTASE,
+        ]
+        k1_non_unk_roles = [GeneRole(int(r)) for r in k1.roles if r != int(GeneRole.UNKNOWN)]
+        assert k1_non_unk_roles == expected_kl1_roles
 
         assert o1.archetype == LocusArchetype.LPS_ABC
         assert o1.start == 1_734_456
         assert o1.end == 1_742_380
         assert o1.strand == 1
         assert o1.is_tandem_split is True
+        assert o1.is_phage.shape == (o1.num_genes,)
 
 
 def test_locus_predictor_pipeline() -> None:
@@ -449,7 +476,7 @@ def test_pan_locus_graph_pipeline() -> None:
         strands=[1, 1, 1, 1],
     )
     loc_rev_mge = Locus.from_genes(
-        ["wbaP", "tnpA", "wzc", "wzb", "wza"],
+        ["wbaP", "tnp", "wzc", "wzb", "wza"],
         strands=[-1, -1, -1, -1, -1],
     )
     assert loc_rev_mge.strand == -1
@@ -536,7 +563,7 @@ def test_locus_matcher_variants_and_novelty() -> None:
     assert best_strand.is_novel is False
 
     q_mge = Locus.from_genes(
-        ["wza", "wzb", "wzc", "wbaP", "tnpA", "wzx", "wzy"],
+        ["wza", "wzb", "wzc", "wbaP", "tnp", "wzx", "wzy"],
         strands=[1, 1, 1, 1, 1, 1, 1],
         clusters=[1, 2, 3, 4, 99, 5, 6],
         archetype=LocusArchetype.CPS_WZY,
@@ -560,7 +587,7 @@ def test_locus_matcher_variants_and_novelty() -> None:
     assert best_fs.is_novel is False
 
     q_combo = Locus.from_genes(
-        ["wzy", "wzx", "tnpA", "wbaP", "wzc", "wzb", "wza"],
+        ["wzy", "wzx", "tnp", "wbaP", "wzc", "wzb", "wza"],
         strands=[-1, -1, -1, -1, -1, -1, -1],
         clusters=[6, 5, 99, 4, 3, 2, 1],
         frameshifts=[False, False, False, False, True, False, False],
@@ -585,7 +612,7 @@ def test_locus_matcher_variants_and_novelty() -> None:
     assert best_syn.is_novel is True
 
     q_gene_var = Locus.from_genes(
-        ["wza", "wzb", "wzc", "wbaZ", "wzx", "wzy"],
+        ["wza", "wzb", "wzc", "gtr", "wzx", "wzy"],
         strands=[1, 1, 1, 1, 1, 1],
         clusters=[1, 2, 3, 50, 5, 6],
         archetype=LocusArchetype.CPS_WZY,
@@ -748,7 +775,7 @@ def test_loci_filter_and_allelic_identity() -> None:
         score=42.0,
     )
     lps_loc = Locus.from_genes(
-        ["wzm", "wzt", "wecA", "wbbl"],
+        ["wzm", "wzt", "wecA", "gtr"],
         strands=[1] * 4,
         archetype=LocusArchetype.LPS_ABC,
         completeness=0.90,
@@ -808,12 +835,19 @@ def test_loci_filter_and_allelic_identity() -> None:
 
 
 def test_wzg_capsule_anchor_operon_snapping_teichoic_acid_and_predictor_filters() -> None:
-    """Verify Wzg/CpsA CAPSULE_ANCHOR classification, outward operon boundary snapping, TEICHOIC_ACID, and predictor filters."""
-    assert GeneRole.label("wzg", "integral membrane regulatory protein Wzg") == GeneRole.CAPSULE_ANCHOR
-    assert GeneRole.label("cpsA", "capsular polysaccharide biosynthesis protein CpsA") == GeneRole.CAPSULE_ANCHOR
-    assert GeneRole.label("cps2A", "capsule regulatory protein") == GeneRole.CAPSULE_ANCHOR
-    assert GeneRole.label("capA", "capsule attachment protein") == GeneRole.CAPSULE_ANCHOR
-    assert GeneRole.label("", "LytR-CpsA-Psr family capsule attachment protein") == GeneRole.CAPSULE_ANCHOR
+    """Verify Wzg/CpsA CAPSULE_ANCHOR resolution, GeneNode.is_phage, outward operon boundary snapping, and TEICHOIC_ACID."""
+    assert GeneRole.resolve("wzg") == GeneRole.CAPSULE_ANCHOR
+    assert GeneRole.resolve("cpsA") == GeneRole.CAPSULE_ANCHOR
+    assert GeneRole.resolve("cps2A") == GeneRole.CAPSULE_ANCHOR
+    assert GeneRole.resolve("capA") == GeneRole.CAPSULE_ANCHOR
+    assert GeneRole.resolve("cpsACP") == GeneRole.PHOSPHATASE
+
+    node_ph = GeneNode(GeneRole.GLYCOSYLTRANSFERASE, cluster_id=42, is_frameshift=True, is_phage=True)
+    assert node_ph.role == GeneRole.GLYCOSYLTRANSFERASE
+    assert node_ph.cluster_id == 42
+    assert node_ph.is_frameshift is True
+    assert node_ph.is_phage is True
+    assert "phage" in repr(node_ph)
 
     spn23f_wzg_seq = (
         b"MSRRFKKSRSQKVKRSVNIVLLTIYLLLVCFLLFLIFKYNILAFRYLNLVVTALVLLVALVGLLLIIYKKAEKFTIFLLVFSILVSSVSLFA"

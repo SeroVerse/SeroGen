@@ -430,12 +430,13 @@ class LocusSegmenter:
         non_unk = island_probs.copy()
         non_unk[:, int(GeneRole.UNKNOWN)] = -1.0
         best_non_unk = np.argmax(non_unk, axis=1).astype(np.int32)
+        best_non_unk_prob = np.max(non_unk, axis=1)
         raw_top = np.argmax(island_probs, axis=1).astype(np.int32)
         biosyn_prob = island_probs[:, t.biosynthetic_mask].sum(axis=1)
         mge_prob = island_probs[:, int(GeneRole.TRANSPOSASE)] + island_probs[:, int(GeneRole.INTEGRASE)]
         is_mge = mge_prob >= self.min_biosynthetic_prob
         top_roles = np.where(
-            (raw_top == int(GeneRole.UNKNOWN)) & ((biosyn_prob + mge_prob) >= self.min_biosynthetic_prob),
+            (raw_top == int(GeneRole.UNKNOWN)) & (best_non_unk_prob >= self.min_biosynthetic_prob),
             best_non_unk,
             raw_top,
         ).astype(np.int32)
@@ -491,13 +492,28 @@ class LocusSegmenter:
         )
         valid_mask[:, int(LocusArchetype.UNKNOWN)] = False
 
-        # Restrict 1-2 gene segments exclusively to CPS_SYNTHASE
+        # Restrict 1-2 gene segments exclusively to CPS_SYNTHASE (unless operon-coupled to a CPS_SYNTHASE-forbidden gene)
         short_rows = (e_arr - s_arr) < self.min_locus_genes
         if np.any(short_rows):
             cps_synth_id = int(LocusArchetype.CPS_SYNTHASE)
             short_arch_mask = np.zeros(len(LocusArchetype), dtype=np.bool_)
             short_arch_mask[cps_synth_id] = True
             valid_mask[short_rows] &= short_arch_mask[None, :]
+            synth_forb = int(LocusArchetype.CPS_SYNTHASE.forbidden_mask)
+            for k_idx in np.nonzero(short_rows)[0]:
+                si, ei = int(s_arr[k_idx]), int(e_arr[k_idx])
+                if (
+                    si > 0
+                    and int(island_strands[si - 1]) == int(island_strands[si])
+                    and int(island_starts[si]) - int(island_ends[si - 1]) <= self.max_operon_snap_bp
+                    and (synth_forb & (1 << int(top_roles[si - 1]))) != 0
+                ) or (
+                    ei < m
+                    and int(island_strands[ei]) == int(island_strands[ei - 1])
+                    and int(island_starts[ei]) - int(island_ends[ei - 1]) <= self.max_operon_snap_bp
+                    and (synth_forb & (1 << int(top_roles[ei]))) != 0
+                ):
+                    valid_mask[k_idx, cps_synth_id] = False
 
         open_pen = np.full(seg_len.shape, self.locus_open_penalty, dtype=np.float64)
         if np.any(short_rows):
@@ -871,6 +887,7 @@ class LocusSegmenter:
         genes: Genes,
         top_roles: np.ndarray[tuple[int], np.dtype[np.int32]],
         frameshifts: np.ndarray[tuple[int], np.dtype[np.bool_]],
+        phage_arr: np.ndarray[tuple[int], np.dtype[np.bool_]],
         cluster_arr: np.ndarray[tuple[int], np.dtype[np.int32]],
         starts: np.ndarray[tuple[int], np.dtype[np.int32]],
         ends: np.ndarray[tuple[int], np.dtype[np.int32]],
@@ -881,13 +898,19 @@ class LocusSegmenter:
         seg_genes = genes[g_indices]
         seg_roles = top_roles[g_indices]
         seg_fs = frameshifts[g_indices]
+        seg_phage = phage_arr[g_indices]
         seg_cids = cluster_arr[g_indices]
         seg_starts = starts[g_indices]
         seg_ends = ends[g_indices]
         seg_strands = strands[g_indices]
 
         nodes = tuple(
-            GeneNode(int(seg_roles[k]), cluster_id=int(seg_cids[k]), is_frameshift=bool(seg_fs[k]))
+            GeneNode(
+                int(seg_roles[k]),
+                cluster_id=int(seg_cids[k]),
+                is_frameshift=bool(seg_fs[k]),
+                is_phage=bool(seg_phage[k]),
+            )
             for k in range(n_seg)
         )
         edges = tuple(
@@ -924,6 +947,7 @@ class LocusSegmenter:
         genes: Genes,
         top_roles: np.ndarray[tuple[int], np.dtype[np.int32]],
         frameshifts: np.ndarray[tuple[int], np.dtype[np.bool_]],
+        phage_arr: np.ndarray[tuple[int], np.dtype[np.bool_]],
         cluster_arr: np.ndarray[tuple[int], np.dtype[np.int32]],
         starts: np.ndarray[tuple[int], np.dtype[np.int32]],
         ends: np.ndarray[tuple[int], np.dtype[np.int32]],
@@ -972,6 +996,7 @@ class LocusSegmenter:
                         genes=genes,
                         top_roles=top_roles,
                         frameshifts=frameshifts,
+                        phage_arr=phage_arr,
                         cluster_arr=cluster_arr,
                         starts=starts,
                         ends=ends,
@@ -984,12 +1009,18 @@ class LocusSegmenter:
             seg_genes = genes[g_indices]
             seg_roles = top_roles[g_indices]
             seg_fs = frameshifts[g_indices]
+            seg_phage = phage_arr[g_indices]
             seg_cids = cluster_arr[g_indices]
             seg_starts = starts[g_indices]
             seg_ends = ends[g_indices]
 
             nodes = tuple(
-                GeneNode(int(seg_roles[k]), cluster_id=int(seg_cids[k]), is_frameshift=bool(seg_fs[k]))
+                GeneNode(
+                    int(seg_roles[k]),
+                    cluster_id=int(seg_cids[k]),
+                    is_frameshift=bool(seg_fs[k]),
+                    is_phage=bool(seg_phage[k]),
+                )
                 for k in range(n_seg)
             )
             edges_list: list[IntergenicEdge] = []
@@ -1031,6 +1062,7 @@ class LocusSegmenter:
         role_probs: np.ndarray | Sequence[int | GeneRole],
         *,
         clusters: Sequence[int] | np.ndarray | None = None,
+        is_phage: Sequence[bool] | np.ndarray | None = None,
     ) -> Loci:
         """Segment a [`Genes`][serogen.genes.models.Genes] container and role predictions into [`Loci`][serogen.loci.models.Loci]."""
         n_genes = len(genes)
@@ -1045,13 +1077,11 @@ class LocusSegmenter:
         non_unk_probs = probs.copy()
         non_unk_probs[:, int(GeneRole.UNKNOWN)] = -1.0
         best_non_unk_roles = np.argmax(non_unk_probs, axis=1).astype(np.int32)
+        best_non_unk_prob = np.max(non_unk_probs, axis=1)
 
         top_roles = np.argmax(probs, axis=1).astype(np.int32)
         biosyn_prob_all = probs[:, t.biosynthetic_mask].sum(axis=1)
-        mge_prob_all = probs[:, int(GeneRole.TRANSPOSASE)] + probs[:, int(GeneRole.INTEGRASE)]
-        use_non_unk = (top_roles == int(GeneRole.UNKNOWN)) & (
-            (biosyn_prob_all + mge_prob_all) >= self.min_biosynthetic_prob
-        )
+        use_non_unk = (top_roles == int(GeneRole.UNKNOWN)) & (best_non_unk_prob >= self.min_biosynthetic_prob)
         top_roles = np.where(use_non_unk, best_non_unk_roles, top_roles).astype(np.int32)
 
         starts = genes.intervals.starts
@@ -1065,6 +1095,7 @@ class LocusSegmenter:
         cluster_arr = (
             np.asarray(clusters, dtype=np.int32) if clusters is not None else np.zeros(n_genes, dtype=np.int32)
         )
+        phage_arr = np.asarray(is_phage, dtype=np.bool_) if is_phage is not None else np.zeros(n_genes, dtype=np.bool_)
 
         unique_contigs = np.unique(contig_indices)
         multi_contig_mode = self.stitch_contig_splits and len(unique_contigs) > 1
@@ -1212,6 +1243,7 @@ class LocusSegmenter:
                                 genes=genes,
                                 top_roles=top_roles,
                                 frameshifts=frameshifts,
+                                phage_arr=phage_arr,
                                 cluster_arr=cluster_arr,
                                 starts=starts,
                                 ends=ends,
@@ -1236,6 +1268,7 @@ class LocusSegmenter:
                         genes=genes,
                         top_roles=top_roles,
                         frameshifts=frameshifts,
+                        phage_arr=phage_arr,
                         cluster_arr=cluster_arr,
                         starts=starts,
                         ends=ends,

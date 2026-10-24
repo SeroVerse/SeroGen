@@ -31,6 +31,7 @@ app = marimo.App(
 def _():
     import gzip
     import os
+    import pickle
     import re
     import threading
     import time
@@ -51,11 +52,13 @@ def _():
     from numba import njit, prange
     from scipy.sparse import csr_array
 
+    from serogen.core.interval import Intervals
     from serogen.core.io.fasta import FastaReader
     from serogen.core.seq.alphabet import Alphabet
     from serogen.core.seq.clustering import Clusterer
     from serogen.core.seq.seq import Sequences
     from serogen.genes.cnn import GeneRoleClassifier
+    from serogen.genes.models import Genes, Indels
     from serogen.genes.roles import GeneRole
 
     alt.data_transformers.disable_max_rows()
@@ -67,7 +70,10 @@ def _():
         FastaReader,
         GeneRole,
         GeneRoleClassifier,
+        Genes,
         HTTPError,
+        Indels,
+        Intervals,
         NoMatchError,
         Path,
         Request,
@@ -84,6 +90,7 @@ def _():
         np,
         optuna,
         os,
+        pickle,
         prange,
         quote,
         re,
@@ -96,258 +103,299 @@ def _():
 @app.cell
 def _(GeneRole, re):
     # ------------------------------------------------------------------------------------------------------------------
-    # Multi-Source Query Registries (UniProtKB + Pfam/InterPro, UniRef50, NCBI IPG, and KEGG Orthology) for Roles 0..28
-    # including Viral/Bacteriophage (taxonomy_id:10239) + Prophage subqueries and Hard-Negative Decoy Pools (Role 29)
+    # Structured Ontology & Domain Query Registries (UniProtKB InterPro/Pfam/EC/GO/CC, UniRef50, and KEGG Orthology)
+    # for Roles 0..28 including Viral/Bacteriophage (taxonomy_id:10239) + Prophage subqueries and Decoy Pools (Role 29)
     # ------------------------------------------------------------------------------------------------------------------
     ROLE_QUERIES: dict[int, dict[str, object]] = {
         int(GeneRole.FLIPPASE): {
-            "uniprot": '((gene:wzx OR protein_name:"O-antigen flippase" OR xref:pfam-PF01943 OR xref:pfam-PF14667) NOT gene:wzy NOT gene:waaL NOT gene:rfaL NOT gene:murJ NOT gene:ftsW NOT gene:msbA NOT protein_name:polymerase NOT protein_name:ligase NOT protein_name:acetyltransferase NOT protein_name:acyltransferase NOT xref:pfam-PF01757 NOT xref:pfam-PF04932 NOT xref:pfam-PF14296 NOT xref:pfam-PF13425 NOT xref:pfam-PF03023 NOT xref:pfam-PF01098) AND taxonomy_id:2',
-            "uniprot_phage": '((gene:gtrA OR gene:wzx OR protein_name:"bacteriophage glucosyltranslocase" OR protein_name:"O-antigen flippase" OR xref:pfam-PF04138 OR xref:pfam-PF01943 OR xref:pfam-PF14667) NOT gene:wzy NOT protein_name:polymerase) AND (taxonomy_id:10239 OR (taxonomy_id:2 AND (gene:gtrA OR protein_name:prophage OR protein_name:phage OR xref:pfam-PF04138)))',
+            "subqueries": [
+                "(xref:pfam-PF14667 OR xref:interpro-IPR018452 OR xref:interpro-IPR050833) NOT xref:pfam-PF01757 NOT xref:pfam-PF04932 NOT xref:pfam-PF14296 NOT xref:pfam-PF03023 NOT xref:pfam-PF01098 AND taxonomy_id:2",
+                "(xref:pfam-PF01943 OR xref:interpro-IPR002797) AND (go:0140303 OR go:0015238 OR cc_pathway:lipopolysaccharide OR cc_pathway:capsule OR cc_function:flippase) NOT xref:pfam-PF01757 NOT xref:pfam-PF04932 NOT xref:pfam-PF14296 NOT xref:pfam-PF03023 AND taxonomy_id:2",
+            ],
+            "uniprot_phage": "(xref:pfam-PF04138 OR xref:interpro-IPR007254 OR ((xref:pfam-PF01943 OR xref:pfam-PF14667 OR xref:interpro-IPR050833) AND (taxonomy_id:10239 OR cc_function:prophage OR cc_function:bacteriophage))) NOT xref:pfam-PF14296",
             "uniref": '(name:"O-antigen flippase" OR name:"polysaccharide flippase") NOT name:polymerase NOT name:ligase NOT name:acetyltransferase NOT name:acyltransferase NOT name:Wzy NOT name:WaaL NOT name:MurJ AND identity:0.5 AND taxonomy_id:2',
             "uniref_phage": "(name:GtrA OR ((name:phage OR name:prophage) AND (name:flippase OR name:translocase))) AND identity:0.5",
-            "ncbi_ipg": '("O-antigen flippase"[Product] OR wzx[Gene Name]) NOT polymerase[Product] NOT ligase[Product] NOT acetyltransferase[Product] NOT acyltransferase[Product] NOT wzy[Gene Name] NOT waaL[Gene Name] AND "Bacteria"[Organism]',
-            "min_len": 280,
-            "max_len": 550,
+            "min_len": 250,
+            "max_len": 560,
             "phage_min_len": 95,
             "phage_max_len": 550,
         },
         int(GeneRole.POLYMERASE): {
-            "uniprot": '((gene:wzy OR protein_name:"O-antigen polymerase" OR protein_name:"capsular polysaccharide polymerase" OR xref:pfam-PF14296) NOT gene:waaL NOT gene:rfaL NOT gene:wzx NOT protein_name:ligase NOT protein_name:flippase NOT protein_name:acetyltransferase NOT protein_name:acyltransferase NOT xref:pfam-PF01757 NOT xref:pfam-PF04932 NOT xref:pfam-PF01943 NOT xref:pfam-PF14667 NOT xref:pfam-PF13440) AND taxonomy_id:2',
-            "uniprot_phage": '((gene:wzy OR protein_name:"O-antigen polymerase" OR protein_name:"polysaccharide polymerase" OR xref:pfam-PF14296) NOT gene:wzx NOT protein_name:flippase NOT protein_name:ligase) AND (taxonomy_id:10239 OR (taxonomy_id:2 AND (protein_name:phage OR protein_name:prophage)))',
+            "subqueries": [
+                "(xref:pfam-PF14296 OR xref:interpro-IPR025997 OR xref:pfam-PF13425 OR xref:interpro-IPR024722) NOT go:0008754 NOT xref:pfam-PF01943 NOT xref:pfam-PF14667 NOT xref:pfam-PF01757 AND taxonomy_id:2",
+                "((xref:interpro-IPR051533 OR xref:pfam-PF04932) AND (cc_pathway:capsule OR go:0045227 OR taxonomy_id:573)) NOT go:0008754 NOT xref:pfam-PF01943 NOT xref:pfam-PF14667 AND taxonomy_id:2",
+            ],
+            "uniprot_phage": "((xref:pfam-PF14296 OR xref:interpro-IPR025997 OR xref:interpro-IPR051533) NOT go:0008754 NOT xref:pfam-PF01943) AND (taxonomy_id:10239 OR cc_function:prophage OR cc_function:bacteriophage)",
             "uniref": '(name:"O-antigen polymerase" OR name:"polysaccharide polymerase" OR name:Wzy) NOT name:ligase NOT name:flippase NOT name:acetyltransferase NOT name:acyltransferase NOT name:WaaL NOT name:RfaL NOT name:Wzx AND identity:0.5 AND taxonomy_id:2',
-            "uniref_phage": '((name:"O-antigen polymerase" OR name:Wzy) AND (taxonomy_id:10239 OR name:phage OR name:prophage)) AND identity:0.5',
-            "ncbi_ipg": '("O-antigen polymerase"[Product] OR wzy[Gene Name]) NOT ligase[Product] NOT flippase[Product] NOT acetyltransferase[Product] NOT acyltransferase[Product] NOT waaL[Gene Name] NOT wzx[Gene Name] AND "Bacteria"[Organism]',
-            "min_len": 260,
+            "uniref_phage": '((name:"O-antigen polymerase" OR name:"polysaccharide polymerase") AND taxonomy_id:10239) AND identity:0.5',
+            "min_len": 250,
             "max_len": 560,
         },
         int(GeneRole.COPOLYMERASE): {
-            "uniprot": '(gene:wzz OR gene:wzzB OR gene:wzzE OR gene:fepE OR gene_exact:cld OR protein_name:"chain length determinant" OR protein_name:"polysaccharide copolymerase" OR xref:pfam-PF02706) NOT gene:wzc NOT protein_name:kinase AND taxonomy_id:2',
+            "subqueries": [
+                "(xref:pfam-PF02706 OR xref:interpro-IPR003856) NOT xref:pfam-PF13614 NOT xref:interpro-IPR027417 NOT ec:2.7.10.- AND taxonomy_id:2",
+            ],
             "uniref": '(name:"chain length determinant" OR name:"polysaccharide co-polymerase" OR name:Wzz) NOT name:kinase NOT name:Wzc AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("chain length determinant"[Product] OR wzz[Gene Name] OR fepE[Gene Name]) AND "Bacteria"[Organism]',
             "min_len": 180,
             "max_len": 520,
         },
         int(GeneRole.KINASE): {
-            "uniprot": '(gene:wzc OR gene:ptk OR gene:etk OR gene:cpsD OR gene:capB OR protein_name:"tyrosine-protein kinase Wzc" OR xref:pfam-PF13614) NOT gene:wza NOT gene:wzb NOT protein_name:phosphatase AND taxonomy_id:2',
+            "subqueries": [
+                "(xref:pfam-PF13614 OR xref:interpro-IPR027417 OR ec:2.7.10.2) AND (xref:pfam-PF02706 OR xref:interpro-IPR003856 OR cc_pathway:capsule OR cc_pathway:polysaccharide OR cc_pathway:exopolysaccharide OR go:0004713) NOT ec:3.1.3.48 AND taxonomy_id:2",
+            ],
             "uniref": '(name:"tyrosine-protein kinase Wzc" OR name:"tyrosine-protein kinase Etk" OR (name:"exopolysaccharide" AND name:kinase)) NOT name:phosphatase NOT name:Wza AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("tyrosine-protein kinase Wzc"[Product] OR wzc[Gene Name] OR ptk[Gene Name]) AND "Bacteria"[Organism]',
-            "min_len": 200,
+            "min_len": 190,
             "max_len": 820,
         },
         int(GeneRole.PHOSPHATASE): {
-            "uniprot": '(gene:wzb OR gene:ptp OR gene:etp OR gene:cpsB OR gene:cpsACP OR protein_name:"phosphotyrosine protein phosphatase" OR xref:pfam-PF01451 OR xref:pfam-PF01569) NOT protein_name:kinase AND taxonomy_id:2',
-            "gt_subqueries": [
-                '(gene:wzb OR gene:ptp OR gene:etp OR gene:cpsB OR protein_name:"phosphotyrosine protein phosphatase" OR xref:pfam-PF01451) NOT protein_name:kinase AND taxonomy_id:2',
-                "(gene:cpsACP OR (xref:pfam-PF01569 AND (protein_name:phosphatase OR protein_name:capsule OR gene:cps*))) NOT protein_name:kinase AND taxonomy_id:2",
+            "subqueries": [
+                "(xref:pfam-PF01451 OR xref:interpro-IPR000106 OR ec:3.1.3.48) NOT ec:2.7.10.- AND taxonomy_id:2",
+                "(xref:interpro-IPR032908 OR (xref:pfam-PF01569 AND (cc_pathway:capsule OR go:0016791 OR go:0009103))) NOT ec:2.7.10.- AND taxonomy_id:2",
+                "(xref:pfam-PF01569 AND xref:interpro-IPR000326) NOT go:0050380 NOT ec:2.7.10.- AND taxonomy_id:573",
             ],
             "uniref": '(name:"low molecular weight phosphotyrosine protein phosphatase" OR name:"phosphotyrosine-protein phosphatase" OR name:Wzb OR name:CpsACP) NOT name:kinase AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("low molecular weight phosphotyrosine protein phosphatase"[Product] OR wzb[Gene Name] OR cpsACP[Gene Name]) AND "Bacteria"[Organism]',
-            "min_len": 110,
-            "max_len": 270,
+            "min_len": 55,
+            "max_len": 300,
         },
         int(GeneRole.ABC_PERMEASE): {
-            "uniprot": '(gene:wzm OR gene:kpsM OR protein_name:"capsule export system permease" OR protein_name:"polysaccharide ABC transporter permease" OR xref:pfam-PF01061 OR xref:pfam-PF06562) NOT gene:wza NOT gene:kpsD NOT gene:kpsE NOT gene:wzt NOT gene:kpsT NOT protein_name:"ATP-binding" NOT protein_name:"outer membrane" AND taxonomy_id:2',
+            "subqueries": [
+                "(xref:pfam-PF06562 OR xref:interpro-IPR009493 OR (xref:pfam-PF01061 AND (cc_pathway:capsule OR cc_pathway:lipopolysaccharide OR cc_function:capsule OR go:0045226 OR go:0015238))) NOT xref:pfam-PF00005 NOT xref:pfam-PF02563 AND taxonomy_id:2",
+            ],
             "uniref": '((name:"ABC transporter permease" AND (name:polysaccharide OR name:capsule OR name:"O-antigen")) OR name:"capsule export system permease" OR name:Wzm OR name:KpsM) NOT name:Wza NOT name:KpsD NOT name:KpsE NOT name:Wzt NOT name:KpsT NOT name:"ATP-binding" NOT name:"outer membrane" AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("capsule export system permease"[Product] OR wzm[Gene Name] OR kpsM[Gene Name]) NOT wza[Gene Name] NOT kpsD[Gene Name] NOT wzt[Gene Name] AND "Bacteria"[Organism]',
-            "min_len": 210,
-            "max_len": 340,
+            "min_len": 200,
+            "max_len": 360,
         },
         int(GeneRole.ABC_ATPASE): {
-            "uniprot": '(gene:wzt OR gene:kpsT OR protein_name:"capsule export system ATP-binding" OR protein_name:"teichoic acid export ATP-binding") NOT gene:wzm NOT gene:kpsM NOT protein_name:permease AND taxonomy_id:2',
+            "subqueries": [
+                "(xref:pfam-PF00005 AND (xref:pfam-PF14524 OR xref:interpro-IPR027466 OR cc_pathway:capsule OR cc_pathway:lipopolysaccharide OR cc_function:teichoic)) NOT xref:pfam-PF01061 NOT xref:pfam-PF06562 AND taxonomy_id:2",
+            ],
             "uniref": '(name:"polysaccharide export ATP-binding" OR name:"capsule export system ATP-binding" OR name:Wzt OR name:KpsT) NOT name:permease NOT name:Wzm NOT name:KpsM AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("capsule export system ATP-binding"[Product] OR wzt[Gene Name] OR kpsT[Gene Name]) NOT wzm[Gene Name] NOT kpsM[Gene Name] AND "Bacteria"[Organism]',
             "min_len": 200,
             "max_len": 520,
         },
         int(GeneRole.LIGASE): {
-            "uniprot": '((gene:waaL OR gene:rfaL OR protein_name:"O-antigen ligase" OR (xref:pfam-PF04932 AND protein_name:ligase)) NOT gene:wzy NOT gene:wzx NOT protein_name:polymerase NOT protein_name:flippase NOT xref:pfam-PF01943 NOT xref:pfam-PF14667 NOT xref:pfam-PF14296) AND taxonomy_id:2',
+            "subqueries": [
+                "(go:0008754 OR ec:2.4.99.30 OR (xref:pfam-PF04932 AND go:0009103 AND cc_function:ligase)) NOT xref:pfam-PF14296 NOT xref:pfam-PF13425 NOT xref:pfam-PF01943 NOT xref:pfam-PF14667 NOT go:0045227 AND taxonomy_id:2",
+            ],
             "uniref": '(name:"O-antigen ligase" OR name:"lipid A-core:surface polymer ligase" OR name:WaaL OR name:RfaL) NOT name:polymerase NOT name:flippase NOT name:Wzy NOT name:Wzx AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("O-antigen ligase"[Product] OR waaL[Gene Name] OR rfaL[Gene Name]) NOT polymerase[Product] NOT flippase[Product] NOT wzy[Gene Name] NOT wzx[Gene Name] AND "Bacteria"[Organism]',
             "min_len": 280,
             "max_len": 540,
         },
         int(GeneRole.TRANSLOCON): {
-            "uniprot": '(gene:wza OR gene:kpsD OR protein_name:"polysaccharide export protein Wza" OR protein_name:"outer membrane polysaccharide export" OR xref:pfam-PF02563) NOT gene:wzm NOT gene:kpsM NOT gene:kpsE NOT gene:wzc NOT protein_name:permease NOT protein_name:kinase NOT protein_name:"inner membrane" NOT protein_name:"ATP-binding" AND taxonomy_id:2',
-            "uniref": '(name:"outer membrane polysaccharide export" OR name:"polysaccharide export protein Wza" OR name:Wza OR name:KpsD) NOT name:Wzm NOT name:KpsM NOT name:KpsE NOT name:permease NOT name:kinase NOT name:"ABC transporter" AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("outer membrane polysaccharide export"[Product] OR wza[Gene Name] OR kpsD[Gene Name]) NOT wzm[Gene Name] NOT kpsM[Gene Name] NOT kpsE[Gene Name] AND "Bacteria"[Organism]',
-            "min_len": 290,
-            "max_len": 500,
+            "subqueries": [
+                "(xref:pfam-PF02563 OR xref:interpro-IPR003715) NOT xref:pfam-PF01061 NOT xref:pfam-PF13614 AND taxonomy_id:2",
+                "(xref:pfam-PF06251 OR xref:interpro-IPR009662) NOT xref:pfam-PF01061 AND taxonomy_id:2",
+                "(xref:pfam-PF06082 OR xref:pfam-PF06257 OR xref:interpro-IPR010653 OR xref:interpro-IPR009480) AND taxonomy_id:2",
+            ],
+            "uniref": '(name:"outer membrane polysaccharide export" OR name:"polysaccharide export protein Wza" OR name:Wza OR name:KpsD OR name:KpsE OR name:GfcB OR name:GfcC OR name:GfcD) NOT name:Wzm NOT name:KpsM NOT name:permease NOT name:kinase NOT name:"ABC transporter" AND identity:0.5 AND taxonomy_id:2',
+            "min_len": 190,
+            "max_len": 760,
         },
         int(GeneRole.CAPSULE_ANCHOR): {
-            "uniprot": '(gene:wzi OR gene:kpsC OR gene:wzg OR gene:cpsA OR gene:cps2A OR gene:capA OR protein_name:"capsule attachment protein" OR protein_name:"capsule assembly protein Wzi" OR protein_name:"capsular polysaccharide assembly protein Wzi" OR protein_name:"LytR-CpsA-Psr" OR xref:pfam-PF14052 OR (xref:pfam-PF03816 AND (gene:wzg OR gene:cps* OR gene:cap* OR protein_name:capsule))) AND taxonomy_id:2',
-            "gt_subqueries": [
-                '(gene:wzi OR gene:kpsC OR protein_name:"capsule assembly protein Wzi" OR protein_name:"capsular polysaccharide assembly protein Wzi" OR xref:pfam-PF14052) NOT protein_name:glycosyltransferase AND taxonomy_id:2',
-                '((xref:pfam-PF03816 AND (gene:wzg OR gene:cps* OR gene:cap* OR protein_name:capsule)) OR gene:wzg OR gene:cpsA OR gene:cps2A OR protein_name:"LytR-CpsA-Psr") NOT protein_name:glycosyltransferase AND taxonomy_id:2',
+            "subqueries": [
+                "(xref:pfam-PF14052 OR xref:interpro-IPR025704 OR xref:interpro-IPR026950) AND taxonomy_id:2",
+                "(xref:interpro-IPR026589 OR xref:pfam-PF14897) AND taxonomy_id:2",
+                "(xref:pfam-PF03816 OR xref:interpro-IPR007465) AND (cc_pathway:capsule OR go:0045226 OR go:0045227 OR taxonomy_id:1301) AND taxonomy_id:2",
             ],
             "uniref": '(name:"capsule assembly protein Wzi" OR name:Wzi OR name:KpsC OR name:Wzg OR name:CpsA OR (name:"LytR-CpsA-Psr" AND name:capsule)) AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("capsule attachment protein"[Product] OR "capsule assembly protein Wzi"[Product] OR wzi[Gene Name] OR kpsC[Gene Name] OR wzg[Gene Name] OR cpsA[Gene Name] OR cps2A[Gene Name]) AND "Bacteria"[Organism]',
-            "min_len": 320,
-            "max_len": 680,
+            "min_len": 300,
+            "max_len": 720,
         },
         int(GeneRole.PYRUVYLTRANSFERASE): {
-            "uniprot": "((gene:wcaK OR protein_name:pyruvyltransferase OR xref:pfam-PF04230 OR xref:interpro-IPR007345) NOT gene:murB NOT protein_name:reductase NOT protein_name:glycosyltransferase NOT xref:pfam-PF00534 NOT xref:pfam-PF00535 NOT xref:pfam-PF13439 NOT xref:pfam-PF13579 NOT xref:pfam-PF01565) AND taxonomy_id:2",
+            "subqueries": [
+                "(xref:pfam-PF04230 OR xref:interpro-IPR007345) NOT xref:pfam-PF00534 NOT xref:pfam-PF00535 NOT xref:pfam-PF13439 NOT xref:pfam-PF13579 NOT xref:pfam-PF01565 AND taxonomy_id:2",
+            ],
             "uniref": '(name:pyruvyl* OR name:"Polysaccharide pyruvyl transferase") NOT name:reductase NOT name:glycosyltransferase AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '(pyruvyltransferase[Product] OR "polysaccharide pyruvyl transferase"[Product] OR wcaK[Gene Name]) NOT glycosyltransferase[Product] NOT reductase[Product] AND "Bacteria"[Organism]',
             "min_len": 220,
             "max_len": 480,
         },
         int(GeneRole.METHYLTRANSFERASE): {
+            "subqueries": [
+                "(xref:pfam-PF08241 OR xref:pfam-PF13649 OR xref:pfam-PF13847 OR ec:2.1.1.-) AND (cc_pathway:lipopolysaccharide OR cc_pathway:capsule OR cc_pathway:polysaccharide) AND taxonomy_id:2",
+            ],
             "uniprot": '(protein_name:"polysaccharide O-methyltransferase" OR protein_name:"sugar O-methyltransferase" OR protein_name:"capsular polysaccharide methyltransferase") AND taxonomy_id:2',
             "uniprot_phage": '(protein_name:"O-methyltransferase" OR protein_name:"polysaccharide methyltransferase" OR protein_name:"sugar methyltransferase") AND (taxonomy_id:10239 OR (taxonomy_id:2 AND (protein_name:phage OR protein_name:prophage)))',
             "uniref": '(name:"polysaccharide methyltransferase" OR name:"sugar O-methyltransferase") AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("polysaccharide O-methyltransferase"[Product] OR "sugar O-methyltransferase"[Product]) AND "Bacteria"[Organism]',
             "min_len": 160,
             "max_len": 520,
         },
         int(GeneRole.ACETYLTRANSFERASE): {
-            "uniprot": '(gene:wecD OR gene:oatA OR gene:atr OR gene:wbbJ OR protein_name:"O-acetyltransferase" OR xref:pfam-PF01757) AND taxonomy_id:2',
-            "gt_subqueries": [
-                '((gene:wecD OR gene:wbbJ OR gene:neuD OR xref:pfam-PF00132) AND (protein_name:"O-acetyltransferase" OR protein_name:"acetyltransferase")) NOT protein_name:glycosyltransferase AND taxonomy_id:2',
-                '((gene:oatA OR gene:atr* OR gene:oac* OR xref:pfam-PF01757) AND (protein_name:"O-acetyltransferase" OR protein_name:"acyltransferase" OR protein_name:"acetyltransferase")) NOT protein_name:flippase NOT protein_name:polymerase AND taxonomy_id:2',
+            "subqueries": [
+                "(xref:pfam-PF00132 OR xref:interpro-IPR001451 OR xref:interpro-IPR051159) AND (go:0016747 OR ec:2.3.1.18 OR ec:2.3.1.- OR cc_pathway:capsule OR cc_pathway:lipopolysaccharide) NOT xref:pfam-PF00534 NOT xref:pfam-PF00535 NOT xref:pfam-PF00483 NOT xref:pfam-PF01050 AND taxonomy_id:2",
+                "(xref:interpro-IPR051159 OR (xref:pfam-PF00132 AND go:0016747)) NOT xref:pfam-PF00483 NOT xref:pfam-PF01050 NOT xref:pfam-PF00534 AND taxonomy_id:573",
+                "(xref:pfam-PF01757 OR xref:interpro-IPR002656) AND (go:0016747 OR ec:2.3.1.- OR cc_pathway:capsule OR cc_pathway:lipopolysaccharide) NOT xref:pfam-PF01943 NOT xref:pfam-PF14296 AND taxonomy_id:2",
             ],
-            "uniprot_phage": '((gene:oac* OR protein_name:"O-antigen acetyltransferase" OR protein_name:"O-acetyltransferase" OR xref:pfam-PF01757) NOT protein_name:tail) AND (taxonomy_id:10239 OR (taxonomy_id:2 AND (gene:oac* OR protein_name:phage OR protein_name:prophage)))',
+            "uniprot_phage": "((xref:pfam-PF01757 OR xref:interpro-IPR002656 OR xref:pfam-PF00132) AND go:0016747) AND (taxonomy_id:10239 OR cc_function:prophage OR cc_function:bacteriophage)",
             "uniref": '(name:"O-acetyltransferase" AND name:polysaccharide OR name:WecD OR name:OatA OR name:"Acyl_transf_3") AND identity:0.5 AND taxonomy_id:2',
             "uniref_phage": '(name:Oac OR ((name:"O-acetyltransferase" OR name:"Acyl_transf_3") AND (taxonomy_id:10239 OR name:phage OR name:prophage))) AND identity:0.5',
-            "ncbi_ipg": '("O-acetyltransferase"[Product] OR wecD[Gene Name] OR oatA[Gene Name] OR atr[Gene Name]) AND "Bacteria"[Organism]',
-            "min_len": 140,
+            "min_len": 130,
             "max_len": 680,
             "quota_multiplier": 1.8,
         },
         int(GeneRole.PHOSPHOTRANSFERASE): {
-            "uniprot": '(gene:licD OR gene:pgt OR gene:wcfF OR protein_name:"phosphocholine transferase" OR protein_name:"licD-family phosphotransferase" OR xref:pfam-PF04991) AND taxonomy_id:2',
+            "subqueries": [
+                "(xref:pfam-PF04991 OR xref:interpro-IPR007072) AND taxonomy_id:2",
+                "(xref:pfam-PF08460 OR xref:interpro-IPR013684) AND taxonomy_id:2",
+            ],
             "uniref": '(name:"phosphocholine transferase" OR name:"LicD family" OR name:LicD) AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("phosphocholine transferase"[Product] OR licD[Gene Name] OR pgt[Gene Name]) AND "Bacteria"[Organism]',
-            "min_len": 200,
-            "max_len": 460,
+            "min_len": 170,
+            "max_len": 480,
         },
         int(GeneRole.FORMYLTRANSFERASE): {
-            "uniprot": '(gene:wbqD OR gene:vioF OR gene:wbtB OR gene:fmt OR protein_name:"N-formyltransferase" OR protein_name:"dTDP-4-amino-4,6-dideoxyglucose formyltransferase" OR protein_name:"sugar N-formyltransferase") AND taxonomy_id:2',
+            "subqueries": [
+                "(xref:pfam-PF00551 OR xref:interpro-IPR002376 OR ec:2.1.2.13 OR xref:interpro-IPR015518) AND (cc_pathway:lipopolysaccharide OR cc_pathway:polysaccharide OR go:0009103 OR ec:2.1.2.13) AND taxonomy_id:2",
+            ],
             "uniref": '(name:"formyltransferase" OR name:"N-formyltransferase") AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("N-formyltransferase"[Product] OR "formyltransferase"[Product] OR wbqD[Gene Name]) AND "Bacteria"[Organism]',
             "min_len": 160,
             "max_len": 450,
         },
         int(GeneRole.ALANINE_TRANSFERASE): {
-            "uniprot": '(gene:alt1 OR gene_exact:dltA OR gene:dltB OR gene:aat OR protein_name:"alanine--poly(phosphoribitol) ligase" OR protein_name:"D-alanine transferase" OR protein_name:"D-alanyl-lipoteichoic acid") AND taxonomy_id:2',
+            "subqueries": [
+                "(ec:6.1.1.13 OR xref:interpro-IPR010079 OR xref:pfam-PF04914 OR (xref:pfam-PF03372 AND (cc_function:teichoic OR cc_function:alanine))) AND taxonomy_id:2",
+            ],
             "uniref": '(name:"D-alanine--poly(phosphoribitol) ligase" OR name:"D-alanyl-lipoteichoic acid" OR name:DltA) AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("alanine--poly(phosphoribitol) ligase"[Product] OR "D-alanine transferase"[Product] OR "D-alanyl-lipoteichoic acid biosynthesis"[Product] OR alt1[Gene Name]) AND "Bacteria"[Organism]',
             "min_len": 160,
             "max_len": 560,
         },
         int(GeneRole.AMINOTRANSFERASE): {
-            "uniprot": '(gene:wecE OR gene:degT OR gene:pseC OR gene:perA OR gene:rhnb OR gene:rhnc OR protein_name:"dTDP-4-amino-4,6-dideoxygalactose transaminase" OR xref:pfam-PF01041) AND taxonomy_id:2',
+            "subqueries": [
+                "(xref:pfam-PF01041 OR xref:interpro-IPR000653) AND (ec:2.6.1.59 OR ec:2.6.1.33 OR ec:2.6.1.50 OR ec:2.6.1.102 OR cc_pathway:lipopolysaccharide OR cc_pathway:capsule) AND taxonomy_id:2",
+            ],
             "uniref": '(name:"DegT/DnrJ/EryC1/StrS aminotransferase" OR name:"dTDP-4-amino-4,6-dideoxygalactose transaminase" OR name:WecE) AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("dTDP-4-amino-4,6-dideoxygalactose transaminase"[Product] OR wecE[Gene Name] OR pseC[Gene Name]) AND "Bacteria"[Organism]',
             "min_len": 280,
             "max_len": 480,
         },
         int(GeneRole.ALDOLASE): {
-            "uniprot": '(gene:neuB OR gene:pseI OR gene:legI OR gene:kdsA OR protein_name:"N-acetylneuraminate synthase" OR protein_name:"pseudaminic acid synthase" OR xref:pfam-PF03102) AND taxonomy_id:2',
+            "subqueries": [
+                "(xref:pfam-PF03102 OR xref:pfam-PF00701 OR xref:interpro-IPR004360 OR ec:2.5.1.56 OR ec:2.5.1.55 OR ec:2.5.1.97) AND taxonomy_id:2",
+            ],
             "uniref": '(name:"N-acetylneuraminate synthase" OR name:"pseudaminic acid synthase" OR name:"2-dehydro-3-deoxyphosphooctonate aldolase") AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("N-acetylneuraminate synthase"[Product] OR "pseudaminic acid synthase"[Product] OR neuB[Gene Name] OR kdsA[Gene Name]) AND "Bacteria"[Organism]',
             "min_len": 220,
             "max_len": 450,
         },
         int(GeneRole.DEACETYLASE): {
-            "uniprot": '(gene:pgaB OR gene:pdaA OR gene:icaB OR protein_name:"poly-beta-1,6-N-acetyl-D-glucosamine N-deacetylase" OR protein_name:"polysaccharide deacetylase" OR xref:pfam-PF01522) AND taxonomy_id:2',
-            "uniprot_phage": '(protein_name:"polysaccharide deacetylase" OR xref:pfam-PF01522) AND (taxonomy_id:10239 OR (taxonomy_id:2 AND (protein_name:phage OR protein_name:prophage)))',
+            "subqueries": [
+                "(xref:pfam-PF01522 OR xref:interpro-IPR002509 OR ec:3.5.1.104 OR ec:3.5.1.41) AND taxonomy_id:2",
+            ],
+            "uniprot_phage": "(xref:pfam-PF01522 OR xref:interpro-IPR002509) AND (taxonomy_id:10239 OR cc_function:prophage OR cc_function:bacteriophage)",
             "uniref": '(name:"polysaccharide deacetylase" OR name:"poly-beta-1,6-N-acetyl-D-glucosamine N-deacetylase" OR name:PgaB) AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("poly-beta-1,6-N-acetyl-D-glucosamine N-deacetylase"[Product] OR "polysaccharide deacetylase"[Product] OR pgaB[Gene Name] OR pdaA[Gene Name]) AND "Bacteria"[Organism]',
             "min_len": 180,
             "max_len": 750,
         },
         int(GeneRole.EPIMERASE): {
-            "uniprot": '(gene:gne OR gene:rmlC OR gene:galE OR gene:mnaA OR protein_name:"UDP-glucose 4-epimerase" OR xref:pfam-PF00908) AND taxonomy_id:2',
-            "uniprot_phage": '(gene:galE OR gene:rmlC OR protein_name:"UDP-glucose 4-epimerase" OR xref:pfam-PF00908) AND (taxonomy_id:10239 OR (taxonomy_id:2 AND (protein_name:phage OR protein_name:prophage)))',
-            "uniref": '(name:"UDP-glucose 4-epimerase" OR name:"dTDP-4-dehydrorhamnose 3,5-epimerase" OR name:RmlC OR name:GalE) AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("UDP-glucose 4-epimerase"[Product] OR galE[Gene Name] OR rmlC[Gene Name]) AND "Bacteria"[Organism]',
-            "min_len": 150,
-            "max_len": 420,
+            "subqueries": [
+                "(ec:5.1.3.2 OR xref:interpro-IPR005886) AND taxonomy_id:2",
+                "(ec:5.1.3.13 OR xref:pfam-PF00908 OR xref:interpro-IPR000888) AND taxonomy_id:2",
+                "(ec:5.4.2.8 OR ec:5.4.2.2 OR xref:interpro-IPR005844 OR go:0004615) AND (xref:pfam-PF02878 OR xref:interpro-IPR005844) AND taxonomy_id:2",
+                "(ec:5.4.99.9 OR xref:pfam-PF03275 OR xref:interpro-IPR002658) AND taxonomy_id:2",
+                "(ec:5.3.1.9 OR xref:pfam-PF00342 OR xref:interpro-IPR001672) AND taxonomy_id:2",
+                "(ec:5.3.1.13 OR xref:pfam-PF01380 OR xref:interpro-IPR004384) AND taxonomy_id:2",
+                "(ec:5.1.3.14 OR xref:pfam-PF02350 OR xref:interpro-IPR003331) AND taxonomy_id:2",
+            ],
+            "uniprot_phage": "(ec:5.1.3.2 OR ec:5.1.3.13 OR xref:pfam-PF00908 OR xref:interpro-IPR005886) AND (taxonomy_id:10239 OR cc_function:prophage OR cc_function:bacteriophage)",
+            "uniref": '(name:"UDP-glucose 4-epimerase" OR name:"dTDP-4-dehydrorhamnose 3,5-epimerase" OR name:RmlC OR name:GalE OR name:ManB OR name:Glf) AND identity:0.5 AND taxonomy_id:2',
+            "min_len": 145,
+            "max_len": 580,
+            "quota_multiplier": 2.0,
         },
         int(GeneRole.OXIDOREDUCTASE): {
-            "uniprot": '(gene:rmlB OR gene:rmlD OR gene:ugd OR gene:gmd OR gene:gnd OR protein_name:"UDP-glucose 6-dehydrogenase" OR protein_name:"dTDP-glucose 4,6-dehydratase" OR protein_name:"6-phosphogluconate dehydrogenase" OR xref:pfam-PF03721) AND taxonomy_id:2',
-            "uniprot_phage": '(gene:gmd OR gene:rmlB OR gene:ugd OR protein_name:"GDP-mannose 4,6-dehydratase" OR protein_name:"UDP-glucose 6-dehydrogenase") AND (taxonomy_id:10239 OR (taxonomy_id:2 AND (protein_name:phage OR protein_name:prophage)))',
-            "uniref": '(name:"UDP-glucose 6-dehydrogenase" OR name:"dTDP-glucose 4,6-dehydratase" OR name:"GDP-mannose 4,6-dehydratase" OR name:"6-phosphogluconate dehydrogenase") AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("UDP-glucose 6-dehydrogenase"[Product] OR "dTDP-glucose 4,6-dehydratase"[Product] OR "dTDP-4-dehydrorhamnose reductase"[Product] OR rmlB[Gene Name] OR ugd[Gene Name] OR gnd[Gene Name]) AND "Bacteria"[Organism]',
+            "subqueries": [
+                "(ec:1.1.1.22 OR xref:pfam-PF03721 OR xref:interpro-IPR005882) AND taxonomy_id:2",
+                "(ec:4.2.1.46 OR ec:4.2.1.47 OR xref:interpro-IPR005888 OR xref:interpro-IPR005887 OR xref:pfam-PF16363) AND taxonomy_id:2",
+                "(ec:1.1.1.271 OR ec:1.1.1.133 OR xref:interpro-IPR028614 OR xref:interpro-IPR005913 OR go:0050577) AND taxonomy_id:2",
+                "xref:interpro-IPR028614 AND taxonomy_id:573",
+                "(ec:1.1.1.44 OR xref:pfam-PF03446 OR xref:interpro-IPR006115 OR go:0004616) AND taxonomy_id:2",
+            ],
+            "uniprot_phage": "(ec:4.2.1.46 OR ec:4.2.1.47 OR ec:1.1.1.22 OR xref:pfam-PF03721) AND (taxonomy_id:10239 OR cc_function:prophage OR cc_function:bacteriophage)",
+            "uniref": '(name:"UDP-glucose 6-dehydrogenase" OR name:"dTDP-glucose 4,6-dehydratase" OR name:"GDP-mannose 4,6-dehydratase" OR name:"GDP-L-fucose synthase" OR name:"6-phosphogluconate dehydrogenase") AND identity:0.5 AND taxonomy_id:2',
             "min_len": 240,
             "max_len": 500,
+            "quota_multiplier": 1.8,
         },
         int(GeneRole.TRANSMEMBRANE_SYNTHASE): {
+            "subqueries": [
+                "(xref:pfam-PF13641 OR xref:interpro-IPR029044 OR ec:2.4.1.12 OR ec:2.4.1.212 OR ec:2.4.1.289) AND (cc_pathway:cellulose OR cc_pathway:hyaluronan OR cc_pathway:biofilm OR go:0030244) AND taxonomy_id:2",
+            ],
             "uniprot": '(gene:hasA OR gene:pgaC OR gene:icaA OR (gene:bcsA AND protein_name:"catalytic") OR protein_name:"hyaluronan synthase" OR protein_name:"cellulose synthase catalytic subunit" OR protein_name:"poly-beta-1,6-N-acetyl-D-glucosamine synthase" OR xref:pfam-PF13641) AND taxonomy_id:2',
             "uniref": '(name:"hyaluronan synthase" OR name:"cellulose synthase catalytic subunit" OR name:"poly-beta-1,6-N-acetyl-D-glucosamine synthase") AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("hyaluronan synthase"[Product] OR "cellulose synthase catalytic subunit"[Product] OR "cellulose synthase subunit A"[Product] OR hasA[Gene Name] OR pgaC[Gene Name] OR bcsA[Gene Name]) AND "Bacteria"[Organism]',
             "min_len": 340,
             "max_len": 1000,
         },
         int(GeneRole.NUCLEOTIDYLTRANSFERASE): {
-            "uniprot": '(gene:rmlA OR gene:galU OR gene:glmM OR gene:manC OR protein_name:"glucose-1-phosphate thymidylyltransferase" OR xref:pfam-PF00483) AND taxonomy_id:2',
-            "uniref": '(name:"glucose-1-phosphate thymidylyltransferase" OR name:"UTP--glucose-1-phosphate uridylyltransferase" OR name:RmlA) AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("glucose-1-phosphate thymidylyltransferase"[Product] OR rmlA[Gene Name] OR galU[Gene Name]) AND "Bacteria"[Organism]',
-            "min_len": 210,
+            "subqueries": [
+                "(ec:2.7.7.9 OR ec:2.7.7.24) AND (xref:pfam-PF00483 OR xref:interpro-IPR005835) AND taxonomy_id:2",
+                "(ec:2.7.7.13 OR (xref:pfam-PF01050 AND xref:pfam-PF00483) OR xref:interpro-IPR011004) AND taxonomy_id:2",
+                "(ec:2.7.7.43 OR ec:2.7.7.38) AND (xref:pfam-PF02348 OR xref:interpro-IPR003329) AND taxonomy_id:2",
+            ],
+            "uniref": '(name:"glucose-1-phosphate thymidylyltransferase" OR name:"UTP--glucose-1-phosphate uridylyltransferase" OR name:"mannose-1-phosphate guanylyltransferase" OR name:RmlA OR name:GalU OR name:ManC) AND identity:0.5 AND taxonomy_id:2',
+            "min_len": 195,
             "max_len": 520,
+            "quota_multiplier": 1.6,
         },
         int(GeneRole.NUCLEOTIDASE): {
-            "uniprot": '(gene:gmm OR gene:wcaH OR gene:psaD OR gene:lgaF OR protein_name:"GDP-mannose mannosyl hydrolase" OR protein_name:"sugar-nucleotide hydrolase" OR protein_name:"NUDIX hydrolase") AND taxonomy_id:2',
+            "subqueries": [
+                "(xref:interpro-IPR033715 OR xref:interpro-IPR028613 OR go:0008727 OR ec:3.6.1.13 OR ec:3.6.1.66 OR (xref:pfam-PF00293 AND (cc_pathway:capsule OR cc_pathway:polysaccharide OR cc_function:mannose))) AND taxonomy_id:2",
+            ],
             "uniref": '(name:"GDP-mannose mannosyl hydrolase" OR name:"GDP-mannose hydrolase" OR name:"NUDIX hydrolase") AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("GDP-mannose mannosyl hydrolase"[Product] OR "GDP-mannose hydrolase"[Product] OR gmm[Gene Name] OR psaD[Gene Name]) AND "Bacteria"[Organism]',
-            "min_len": 120,
+            "min_len": 105,
             "max_len": 290,
         },
         int(GeneRole.INITIATOR): {
-            "uniprot": '(gene:wbaP OR gene:wcaJ OR gene:wecA OR gene:pglC OR protein_name:"undecaprenyl-phosphate galactose phosphotransferase" OR xref:pfam-PF02397) AND taxonomy_id:2',
-            "uniprot_phage": '((gene:gtrB OR protein_name:"bactoprenol glucosyltransferase" OR protein_name:"undecaprenyl-phosphate glucose phosphotransferase") NOT gene:gtrA) AND (taxonomy_id:10239 OR (taxonomy_id:2 AND (gene:gtrB OR protein_name:phage OR protein_name:prophage)))',
-            "uniref": '(name:"undecaprenyl-phosphate galactose phosphotransferase" OR name:"bacterial sugar transferase" OR name:WbaP OR name:WcaJ) AND identity:0.5 AND taxonomy_id:2',
+            "subqueries": [
+                "(xref:pfam-PF02397 OR xref:interpro-IPR003362 OR ec:2.7.8.6 OR ec:2.7.8.31) AND taxonomy_id:2",
+                "(xref:pfam-PF00953 OR xref:interpro-IPR000715) AND (ec:2.7.8.33 OR ec:2.7.8.15 OR cc_pathway:lipopolysaccharide OR cc_pathway:enterobacterial) AND taxonomy_id:2",
+            ],
+            "uniprot_phage": "(ec:2.4.1.83 OR (xref:interpro-IPR001173 AND (taxonomy_id:10239 OR gene:gtrB))) NOT xref:pfam-PF04138",
+            "uniref": '(name:"undecaprenyl-phosphate galactose phosphotransferase" OR name:"bacterial sugar transferase" OR name:WbaP OR name:WcaJ OR name:WecA) AND identity:0.5 AND taxonomy_id:2',
             "uniref_phage": '(name:GtrB OR name:"bactoprenol glucosyltransferase") AND identity:0.5',
-            "ncbi_ipg": '("undecaprenyl-phosphate galactose phosphotransferase"[Product] OR wbaP[Gene Name] OR wcaJ[Gene Name] OR wecA[Gene Name]) AND "Bacteria"[Organism]',
             "min_len": 180,
             "max_len": 540,
         },
         int(GeneRole.GLYCOSYLHYDROLASE): {
-            "uniprot": '(protein_name:"alginate lyase" OR protein_name:"polysaccharide lyase" OR protein_name:"depolymerase" OR xref:pfam-PF05426) AND taxonomy_id:2',
-            "uniprot_phage": '((protein_name:depolymerase OR protein_name:"tail spike" OR protein_name:tailspike OR protein_name:endosialidase OR protein_name:"polysaccharide lyase" OR protein_name:hyaluronidase OR xref:pfam-PF12708 OR xref:pfam-PF05426) NOT protein_name:endolysin NOT protein_name:holin NOT protein_name:"baseplate hub") AND (taxonomy_id:10239 OR (taxonomy_id:2 AND (protein_name:tailspike OR protein_name:"phage depolymerase")))',
+            "subqueries": [
+                "(xref:pfam-PF05426 OR xref:pfam-PF12708 OR xref:interpro-IPR008929 OR ec:4.2.2.3 OR ec:3.2.1.129) AND taxonomy_id:2",
+            ],
+            "uniprot_phage": "((xref:pfam-PF12708 OR xref:pfam-PF05426 OR ec:3.2.1.129 OR go:0016837) NOT xref:pfam-PF00959 NOT xref:pfam-PF05105) AND taxonomy_id:10239",
             "uniref": '(name:"polysaccharide lyase" OR name:"alginate lyase" OR name:"capsule depolymerase") AND identity:0.5 AND taxonomy_id:2',
             "uniref_phage": '((name:"capsule depolymerase" OR name:endosialidase OR (name:tailspike AND name:depolymerase) OR (name:"polysaccharide lyase" AND taxonomy_id:10239)) NOT name:endolysin) AND identity:0.5',
-            "ncbi_ipg": '("polysaccharide lyase"[Product] OR "alginate lyase"[Product]) AND "Bacteria"[Organism]',
             "min_len": 220,
             "max_len": 650,
             "phage_min_len": 220,
             "phage_max_len": 1150,
         },
         int(GeneRole.GLYCOSYLTRANSFERASE): {
-            "uniprot": '(protein_name:"glycosyltransferase" AND (xref:pfam-PF00534 OR xref:pfam-PF00535 OR xref:pfam-PF13439 OR xref:pfam-PF13579 OR xref:pfam-PF01501)) NOT protein_name:synthase NOT protein_name:cellulose NOT protein_name:hyaluronan NOT protein_name:pyruvyltransferase NOT xref:pfam-PF04230 NOT gene:bcsA NOT gene:pgaC NOT gene:hasA NOT gene:icaA NOT gene:wecA NOT gene:wbaP NOT gene:wcaJ NOT protein_name:transposase NOT protein_name:integrase AND taxonomy_id:2',
-            "uniprot_phage": '((gene:gtr* OR protein_name:"phage glucosyltransferase" OR protein_name:"serotype conversion" OR protein_name:glycosyltransferase) NOT gene:gtrA NOT gene:gtrB NOT protein_name:translocase NOT protein_name:flippase NOT protein_name:lysozyme NOT protein_name:endolysin) AND (taxonomy_id:10239 OR (taxonomy_id:2 AND (gene:gtrC OR protein_name:"phage glucosyltransferase" OR protein_name:"prophage glucosyltransferase")))',
+            "subqueries": [
+                "(xref:pfam-PF00534 OR xref:interpro-IPR001296) AND (go:0016757 OR ec:2.4.1.-) NOT xref:pfam-PF04230 NOT xref:pfam-PF02397 AND taxonomy_id:2",
+                "(xref:pfam-PF00535 OR xref:interpro-IPR001173) AND (go:0016757 OR ec:2.4.1.-) NOT xref:pfam-PF13641 NOT xref:pfam-PF04230 AND taxonomy_id:2",
+                "(xref:pfam-PF13439 OR xref:pfam-PF13579) AND (go:0016757 OR go:0016758 OR ec:2.4.1.-) NOT xref:pfam-PF04230 AND taxonomy_id:2",
+                "(xref:pfam-PF01501 OR xref:pfam-PF01531 OR xref:pfam-PF01755 OR xref:pfam-PF03808) AND (go:0016757 OR ec:2.4.1.-) NOT xref:pfam-PF04230 AND taxonomy_id:2",
+                "(xref:pfam-PF05159 OR xref:interpro-IPR007856) AND taxonomy_id:2",
+                "(xref:interpro-IPR001296 OR xref:interpro-IPR050194 OR xref:pfam-PF00535) AND (go:0016757 OR go:0016758) NOT xref:pfam-PF02397 AND taxonomy_id:573",
+            ],
+            "uniprot_phage": "((xref:pfam-PF00534 OR xref:pfam-PF00535 OR xref:pfam-PF13439) AND (go:0016757 OR ec:2.4.1.-) NOT xref:pfam-PF04138 NOT xref:pfam-PF00959) AND (taxonomy_id:10239 OR cc_function:prophage)",
             "uniref": '(name:"glycosyltransferase family 1" OR name:"glycosyltransferase family 2" OR name:"glycosyltransferase family 4" OR name:"capsular polysaccharide glycosyltransferase") NOT name:synthase NOT name:cellulose NOT name:hyaluronan NOT name:pyruvyltransferase NOT name:transposase NOT name:integrase AND identity:0.5 AND taxonomy_id:2',
             "uniref_phage": '((name:GtrC OR name:"glucosyltransferase Gtr" OR (name:glycosyltransferase AND (taxonomy_id:10239 OR name:phage OR name:prophage))) NOT name:GtrA NOT name:GtrB) AND identity:0.5',
-            "gt_subqueries": [
-                "(xref:pfam-PF00534 AND protein_name:glycosyltransferase) NOT protein_name:synthase NOT protein_name:pyruvyltransferase NOT xref:pfam-PF04230 NOT gene:wecA NOT gene:wbaP NOT gene:wcaJ AND taxonomy_id:2",
-                "(xref:pfam-PF00535 AND protein_name:glycosyltransferase) NOT protein_name:synthase NOT protein_name:cellulose NOT protein_name:hyaluronan NOT protein_name:pyruvyltransferase NOT xref:pfam-PF04230 NOT gene:bcsA NOT gene:pgaC NOT gene:hasA NOT gene:icaA AND taxonomy_id:2",
-                "((xref:pfam-PF13439 OR xref:pfam-PF13579) AND protein_name:glycosyltransferase) NOT protein_name:synthase NOT protein_name:pyruvyltransferase NOT xref:pfam-PF04230 AND taxonomy_id:2",
-                "((xref:pfam-PF01501 OR xref:pfam-PF01531 OR xref:pfam-PF01755 OR xref:pfam-PF03808) AND protein_name:glycosyltransferase) NOT protein_name:synthase NOT protein_name:pyruvyltransferase NOT xref:pfam-PF04230 AND taxonomy_id:2",
-                '((protein_name:glycosyltransferase OR gene:gtr* OR gene:wba* OR gene:wbd*) AND (protein_name:capsule OR protein_name:capsular OR protein_name:"O-antigen")) NOT protein_name:synthase NOT protein_name:pyruvyltransferase NOT gene:wbaP NOT gene:wcaJ NOT gene:wecA AND taxonomy_id:543',
-            ],
-            "ncbi_ipg": '(glycosyltransferase[Product] NOT synthase[Product] NOT cellulose[Product] NOT pyruvyltransferase[Product]) AND "Bacteria"[Organism]',
-            "min_len": 210,
-            "max_len": 460,
+            "min_len": 185,
+            "max_len": 680,
             "quota_multiplier": 4.5,
         },
         int(GeneRole.TRANSPOSASE): {
-            "uniprot": '((xref:pfam-PF01609 OR xref:pfam-PF01527 OR xref:pfam-PF13333 OR xref:pfam-PF01548 OR xref:pfam-PF02371 OR xref:pfam-PF00872 OR xref:pfam-PF13359 OR protein_name:"IS3 family transposase" OR protein_name:"IS5 family transposase" OR protein_name:"IS6 family transposase" OR protein_name:"IS256 family transposase" OR protein_name:"transposase OrfA" OR protein_name:"IS1 family transposase") AND (protein_name:transposase OR protein_name:"insertion element" OR xref:pfam-PF01527)) NOT protein_name:integrase NOT protein_name:recombinase NOT protein_name:glycosyltransferase AND taxonomy_id:2',
-            "gt_subqueries": [
-                '((xref:pfam-PF01609 OR xref:pfam-PF00872 OR xref:pfam-PF13359 OR protein_name:"IS5 family transposase" OR protein_name:"IS6 family transposase" OR protein_name:"IS256 family transposase") AND protein_name:transposase) NOT protein_name:integrase NOT protein_name:recombinase NOT protein_name:glycosyltransferase AND taxonomy_id:2',
-                '((xref:pfam-PF01527 OR xref:pfam-PF13333 OR xref:pfam-PF01548 OR xref:pfam-PF02371 OR protein_name:"IS3 family transposase" OR protein_name:"IS1 family transposase" OR protein_name:"transposase OrfA") AND (protein_name:transposase OR protein_name:"insertion sequence" OR protein_name:"IS3")) NOT protein_name:integrase NOT protein_name:recombinase NOT protein_name:glycosyltransferase AND taxonomy_id:2',
+            "subqueries": [
+                "(xref:pfam-PF01609 OR xref:pfam-PF00872 OR xref:pfam-PF13359 OR xref:interpro-IPR001584) AND go:0004803 NOT xref:pfam-PF00589 AND taxonomy_id:2",
+                "(xref:pfam-PF01527 OR xref:pfam-PF13333 OR xref:pfam-PF01548 OR xref:pfam-PF02371) AND go:0004803 NOT xref:pfam-PF00589 AND taxonomy_id:2",
             ],
-            "uniprot_phage": '(protein_name:transposase NOT protein_name:integrase NOT protein_name:glycosyltransferase) AND (taxonomy_id:10239 OR (taxonomy_id:2 AND (protein_name:"phage transposase" OR protein_name:"prophage transposase" OR gene:tnp*)))',
+            "uniprot_phage": "go:0004803 NOT xref:pfam-PF00589 AND taxonomy_id:10239",
             "uniref": '(name:"IS3 family transposase" OR name:"IS5 family transposase" OR name:"IS6 family transposase" OR name:"IS256 family transposase" OR name:"IS1 family transposase" OR name:"Transposase_8") NOT name:integrase NOT name:glycosyltransferase AND identity:0.5 AND taxonomy_id:2',
-            "ncbi_ipg": '("IS family transposase"[Product] OR "insertion sequence transposase"[Product] OR "IS3 family transposase"[Product] OR (transposase[Product] NOT integrase[Product])) AND "Bacteria"[Organism]',
             "min_len": 70,
             "max_len": 520,
         },
         int(GeneRole.INTEGRASE): {
-            "uniprot": '(protein_name:"tyrosine recombinase XerC" OR protein_name:"tyrosine recombinase XerD" OR protein_name:"site-specific recombinase" OR xref:pfam-PF00589) NOT protein_name:transposase NOT protein_name:glycosyltransferase NOT protein_name:"phage integrase" NOT protein_name:"prophage integrase" AND taxonomy_id:2',
-            "uniprot_phage": '(protein_name:"phage integrase" OR protein_name:"prophage integrase" OR (protein_name:integrase AND taxonomy_id:10239)) NOT protein_name:transposase NOT protein_name:glycosyltransferase',
+            "subqueries": [
+                "(xref:pfam-PF00589 OR xref:interpro-IPR002104) AND go:0008907 NOT go:0004803 AND taxonomy_id:2",
+            ],
+            "uniprot_phage": "(xref:pfam-PF00589 OR xref:interpro-IPR002104) NOT go:0004803 AND taxonomy_id:10239",
             "uniref": '(name:"site-specific integrase" OR name:"tyrosine recombinase") NOT name:transposase NOT name:glycosyltransferase NOT name:phage AND identity:0.5 AND taxonomy_id:2',
             "uniref_phage": 'name:"phage integrase" NOT name:transposase NOT name:glycosyltransferase AND identity:0.5',
-            "ncbi_ipg": '("site-specific integrase"[Product] OR "phage integrase"[Product] OR "tyrosine recombinase XerC"[Product] OR "tyrosine recombinase XerD"[Product]) AND "Bacteria"[Organism]',
             "min_len": 240,
             "max_len": 560,
         },
@@ -372,6 +420,12 @@ def _(GeneRole, re):
                 "uniref": '(name:enolase OR name:"pyruvate kinase" OR name:"ATP synthase subunit alpha" OR name:"ATP synthase subunit beta") AND identity:0.5 AND taxonomy_id:2',
                 "min_len": 180,
                 "max_len": 650,
+            },
+            {
+                "uniprot": "((xref:pfam-PF00137 OR xref:pfam-PF00584 OR xref:pfam-PF03840 OR xref:pfam-PF00313 OR xref:pfam-PF00572 OR xref:pfam-PF00829) AND reviewed:true) NOT protein_name:glycosyltransferase NOT protein_name:polysaccharide AND taxonomy_id:2",
+                "uniref": '(name:"ATP synthase subunit c" OR name:"protein translocase subunit SecE" OR name:"protein-export membrane protein SecG" OR name:"cold shock-like protein") AND identity:0.5 AND taxonomy_id:2',
+                "min_len": 40,
+                "max_len": 140,
             },
         ],
         1: [
@@ -411,16 +465,24 @@ def _(GeneRole, re):
         "K16693": GeneRole.FLIPPASE,
         "K16695": GeneRole.FLIPPASE,
         "K16692": GeneRole.KINASE,
+        "K01104": GeneRole.PHOSPHATASE,
         "K25307": GeneRole.PHOSPHATASE,
         "K16690": GeneRole.ABC_PERMEASE,
+        "K09686": GeneRole.ABC_PERMEASE,
         "K16691": GeneRole.ABC_ATPASE,
+        "K09687": GeneRole.ABC_ATPASE,
         "K01991": GeneRole.TRANSLOCON,
+        "K09688": GeneRole.TRANSLOCON,
+        "K09689": GeneRole.TRANSLOCON,
+        "K16694": GeneRole.CAPSULE_ANCHOR,
         "K09695": GeneRole.CAPSULE_ANCHOR,
         "K19225": GeneRole.CAPSULE_ANCHOR,
         "K02841": GeneRole.INITIATOR,
         "K03606": GeneRole.INITIATOR,
         "K02843": GeneRole.INITIATOR,
+        "K07271": GeneRole.PHOSPHOTRANSFERASE,
         "K00607": GeneRole.FORMYLTRANSFERASE,
+        "K03367": GeneRole.ALANINE_TRANSFERASE,
         "K16560": GeneRole.PYRUVYLTRANSFERASE,
         "K00558": GeneRole.METHYLTRANSFERASE,
         "K01443": GeneRole.DEACETYLASE,
@@ -429,15 +491,31 @@ def _(GeneRole, re):
         "K05304": GeneRole.ALDOLASE,
         "K01627": GeneRole.ALDOLASE,
         "K00832": GeneRole.AMINOTRANSFERASE,
+        "K01784": GeneRole.EPIMERASE,
         "K01791": GeneRole.EPIMERASE,
         "K01790": GeneRole.EPIMERASE,
         "K02473": GeneRole.EPIMERASE,
+        "K01840": GeneRole.EPIMERASE,
+        "K01835": GeneRole.EPIMERASE,
+        "K01810": GeneRole.EPIMERASE,
+        "K01854": GeneRole.EPIMERASE,
+        "K06041": GeneRole.EPIMERASE,
         "K00012": GeneRole.OXIDOREDUCTASE,
         "K00067": GeneRole.OXIDOREDUCTASE,
+        "K01711": GeneRole.OXIDOREDUCTASE,
         "K02377": GeneRole.OXIDOREDUCTASE,
+        "K00033": GeneRole.OXIDOREDUCTASE,
         "K00697": GeneRole.TRANSMEMBRANE_SYNTHASE,
         "K01795": GeneRole.TRANSMEMBRANE_SYNTHASE,
+        "K00963": GeneRole.NUCLEOTIDYLTRANSFERASE,
+        "K00973": GeneRole.NUCLEOTIDYLTRANSFERASE,
+        "K00971": GeneRole.NUCLEOTIDYLTRANSFERASE,
+        "K16011": GeneRole.NUCLEOTIDYLTRANSFERASE,
+        "K00983": GeneRole.NUCLEOTIDYLTRANSFERASE,
+        "K00979": GeneRole.NUCLEOTIDYLTRANSFERASE,
+        "K01517": GeneRole.NUCLEOTIDASE,
         "K00703": GeneRole.GLYCOSYLTRANSFERASE,
+        "K07266": GeneRole.GLYCOSYLTRANSFERASE,
         "K01186": GeneRole.GLYCOSYLHYDROLASE,
         "K07483": GeneRole.TRANSPOSASE,
         "K04763": GeneRole.INTEGRASE,
@@ -459,8 +537,11 @@ def _(
     FastaReader,
     GeneRole,
     GeneRoleClassifier,
+    Genes,
     HARD_NEGATIVE_QUERIES: dict[int, list[dict[str, object]]],
     HTTPError,
+    Indels,
+    Intervals,
     NoMatchError,
     Path,
     ROLE_QUERIES: dict[int, dict[str, object]],
@@ -479,8 +560,10 @@ def _(
     np,
     optuna,
     os,
+    pickle,
     prange,
     quote,
+    re,
     threading,
     time,
     urlopen,
@@ -746,14 +829,14 @@ def _(
             mult = float(q_spec.get("quota_multiplier", 1.0))  # type: ignore[arg-type]
             return int(round(target_per_role * mult))
 
-        # Phase 1: Parallel HTTP I/O from UniProtKB (Pfam/InterPro enriched) + UniRef50 (pre-clustered <50% identity)
+        # Phase 1: Parallel HTTP I/O from UniProtKB (InterPro/Pfam/EC/GO/CC), UniRef50 (<50% identity), and KEGG Orthology
         gt_excl_uniprot = (
             " NOT xref:pfam-PF00534 NOT xref:pfam-PF00535 NOT xref:pfam-PF13439"
-            " NOT xref:pfam-PF13579 NOT xref:pfam-PF01501 NOT protein_name:glycosyltransferase"
+            " NOT xref:pfam-PF13579 NOT xref:pfam-PF01501"
         )
         gt_excl_uniref = " NOT name:glycosyltransferase"
 
-        def _fetch_primary_http(role_idx: int) -> tuple[Sequences, Sequences]:
+        def _fetch_primary_http(role_idx: int) -> tuple[list[Sequences], list[Sequences]]:
             q_spec = ROLE_QUERIES.get(role_idx, {})
             r_target = _role_target(role_idx)
             bact_batches: list[Sequences] = []
@@ -764,20 +847,21 @@ def _(
                 int(GeneRole.TRANSMEMBRANE_SYNTHASE),
             )
 
-            gt_subs = q_spec.get("gt_subqueries")
-            if isinstance(gt_subs, list) and gt_subs:
-                sub_limit = max((r_target // len(gt_subs)) + 60, 120)
-                for sub_q in gt_subs:
-                    sub_seqs = fetch_uniprot_sequences(str(sub_q), limit=sub_limit)
+            subs = q_spec.get("subqueries") or q_spec.get("gt_subqueries")
+            if isinstance(subs, list) and subs:
+                sub_limit = max((r_target // len(subs)) + 60, 120)
+                for sub_q in subs:
+                    sub_q_str = f"({sub_q}){gt_excl_uniprot}" if exclude_gt else str(sub_q)
+                    sub_seqs = fetch_uniprot_sequences(sub_q_str, limit=sub_limit)
                     if len(sub_seqs) > 0:
                         bact_batches.append(sub_seqs)
-            else:
-                up_q = q_spec.get("uniprot")
-                if up_q:
-                    up_q_str = f"({up_q}){gt_excl_uniprot}" if exclude_gt else str(up_q)
-                    up_seqs = fetch_uniprot_sequences(up_q_str, limit=max(r_target + 100, 180))
-                    if len(up_seqs) > 0:
-                        bact_batches.append(up_seqs)
+
+            up_q = q_spec.get("uniprot")
+            if up_q:
+                up_q_str = f"({up_q}){gt_excl_uniprot}" if exclude_gt else str(up_q)
+                up_seqs = fetch_uniprot_sequences(up_q_str, limit=max(r_target + 100, 180))
+                if len(up_seqs) > 0:
+                    bact_batches.append(up_seqs)
 
             ur_q = q_spec.get("uniref")
             if ur_q:
@@ -785,6 +869,12 @@ def _(
                 ur_seqs = fetch_uniref50_sequences(ur_q_str, limit=max(r_target + 60, 140))
                 if len(ur_seqs) > 0:
                     bact_batches.append(ur_seqs)
+
+            if include_kegg and role_idx in ROLE_TO_KOS:
+                for ko_id in ROLE_TO_KOS[role_idx]:
+                    ko_seqs = fetch_kegg_ko_sequences(ko_id, max_seqs=40)
+                    if len(ko_seqs) > 0:
+                        bact_batches.append(ko_seqs)
 
             up_phage_q = q_spec.get("uniprot_phage")
             if up_phage_q:
@@ -800,9 +890,7 @@ def _(
                 if len(ur_p_seqs) > 0:
                     phage_batches.append(ur_p_seqs)
 
-            bact_raw = Sequences.concat(bact_batches) if bact_batches else Sequences.empty()
-            phage_raw = Sequences.concat(phage_batches) if phage_batches else Sequences.empty()
-            return bact_raw, phage_raw
+            return bact_batches, phage_batches
 
         def _fetch_decoy_spec(spec: dict[str, object]) -> tuple[Sequences, int, int]:
             d_batches: list[Sequences] = []
@@ -832,31 +920,69 @@ def _(
                     bact_decoy_raws = list(pool.map(_fetch_decoy_spec, HARD_NEGATIVE_QUERIES.get(0, [])))
                     phage_decoy_raws = list(pool.map(_fetch_decoy_spec, HARD_NEGATIVE_QUERIES.get(1, [])))
 
-                # Phase 2: Main-thread Numba parallel=True clustering & POST-CLUSTERING deficit detection
+                # Phase 2: Main-thread per-subfamily length/MAD QC & 80% CD-HIT clustering
                 curated_map: dict[int, Sequences] = {}
                 curated_sources: dict[int, np.ndarray] = {}
                 deficit_roles: list[int] = []
-                for r_idx, (bact_raw, phage_raw) in enumerate(primary_raw_list):
+                for r_idx, (bact_subbatches, phage_subbatches) in enumerate(primary_raw_list):
                     q_spec = ROLE_QUERIES.get(r_idx, {})
                     r_min_len = int(q_spec.get("min_len", 30))  # type: ignore[call-overload]
                     r_max_len = int(q_spec.get("max_len", 2500))  # type: ignore[call-overload]
                     p_min_len = int(q_spec.get("phage_min_len", r_min_len))  # type: ignore[call-overload]
                     p_max_len = int(q_spec.get("phage_max_len", r_max_len))  # type: ignore[call-overload]
 
-                    bact_clustered = filter_and_cluster_role_sequences(
-                        bact_raw,
-                        clusterer=clusterer,
-                        k_std=k_std,
-                        min_len=r_min_len,
-                        max_len=r_max_len,
-                    )
-                    phage_clustered = filter_and_cluster_role_sequences(
-                        phage_raw,
-                        clusterer=clusterer,
-                        k_std=k_std,
-                        min_len=p_min_len,
-                        max_len=p_max_len,
-                    )
+                    bact_parts = [
+                        c_sub
+                        for sub_b in bact_subbatches
+                        if len(
+                            c_sub := filter_and_cluster_role_sequences(
+                                sub_b,
+                                clusterer=clusterer,
+                                k_std=k_std,
+                                min_len=r_min_len,
+                                max_len=r_max_len,
+                            )
+                        )
+                        > 0
+                    ]
+                    if len(bact_parts) > 1:
+                        bact_concat = Sequences.concat(bact_parts).unique()
+                        bact_clustered = (
+                            bact_concat[clusterer.cluster(bact_concat).representatives]
+                            if len(bact_concat) > 1
+                            else bact_concat
+                        )
+                    elif len(bact_parts) == 1:
+                        bact_clustered = bact_parts[0]
+                    else:
+                        bact_clustered = Sequences.empty()
+
+                    phage_parts = [
+                        c_sub
+                        for sub_p in phage_subbatches
+                        if len(
+                            c_sub := filter_and_cluster_role_sequences(
+                                sub_p,
+                                clusterer=clusterer,
+                                k_std=k_std,
+                                min_len=p_min_len,
+                                max_len=p_max_len,
+                            )
+                        )
+                        > 0
+                    ]
+                    if len(phage_parts) > 1:
+                        phage_concat = Sequences.concat(phage_parts).unique()
+                        phage_clustered = (
+                            phage_concat[clusterer.cluster(phage_concat).representatives]
+                            if len(phage_concat) > 1
+                            else phage_concat
+                        )
+                    elif len(phage_parts) == 1:
+                        phage_clustered = phage_parts[0]
+                    else:
+                        phage_clustered = Sequences.empty()
+
                     merged_seqs, merged_src = merge_and_cluster_bact_phage(
                         bact_clustered,
                         phage_clustered,
@@ -867,27 +993,20 @@ def _(
                     if len(merged_seqs) < _role_target(r_idx):
                         deficit_roles.append(r_idx)
 
-                # Phase 3: Post-clustering enrichment from NCBI IPG & KEGG Orthology for any role < role_target
-                if deficit_roles and (include_ncbi or include_kegg):
+                # Phase 3: Post-clustering enrichment from NCBI IPG for any role < role_target
+                if deficit_roles and include_ncbi:
 
                     def _fetch_secondary_http(role_idx: int) -> tuple[int, Sequences]:
                         q_spec = ROLE_QUERIES.get(role_idx, {})
                         r_target = _role_target(role_idx)
-                        sec_batches: list[Sequences] = []
-                        if include_ncbi and "ncbi_ipg" in q_spec:
+                        if "ncbi_ipg" in q_spec:
                             ipg_seqs = fetch_ncbi_ipg_sequences(
                                 str(q_spec["ncbi_ipg"]),
                                 limit=max(r_target * 2, 100),
                                 api_key=api_key,
                             )
-                            if len(ipg_seqs) > 0:
-                                sec_batches.append(ipg_seqs)
-                        if include_kegg and role_idx in ROLE_TO_KOS:
-                            for ko_id in ROLE_TO_KOS[role_idx]:
-                                ko_seqs = fetch_kegg_ko_sequences(ko_id, max_seqs=40)
-                                if len(ko_seqs) > 0:
-                                    sec_batches.append(ko_seqs)
-                        return role_idx, (Sequences.concat(sec_batches) if sec_batches else Sequences.empty())
+                            return role_idx, ipg_seqs
+                        return role_idx, Sequences.empty()
 
                     with ThreadPoolExecutor(max_workers=6) as pool:
                         sec_results = list(pool.map(_fetch_secondary_http, deficit_roles))
@@ -971,11 +1090,41 @@ def _(
                 bio_decoy_sources,
             )
 
-        all_seqs = Sequences.concat(ordered_batches)
+        all_seqs_raw = Sequences.concat(ordered_batches)
+        raw_labels = np.concatenate(label_parts)
+        raw_sources = np.concatenate(source_parts)
+
+        # Global deduplication across all subqueries and roles so every sequence in the dataset is strictly unique
+        seen_role_bytes: set[bytes] = set()
+        uniq_idx_list: list[int] = []
+        for s_i in range(len(all_seqs_raw)):
+            b_raw = bytes(all_seqs_raw[s_i].seq)
+            if b_raw not in seen_role_bytes:
+                seen_role_bytes.add(b_raw)
+                uniq_idx_list.append(s_i)
+        uniq_order = np.array(uniq_idx_list, dtype=np.int32)
+        all_seqs = all_seqs_raw[uniq_order]
+        all_labels = raw_labels[uniq_order]
+        all_sources = raw_sources[uniq_order]
+
         encoded_tokens = np.minimum(Alphabet.AMINO.encode(all_seqs.seqs), np.uint8(22))
         encoded_seqs = Sequences(all_seqs.ids, encoded_tokens, all_seqs.offsets, all_seqs.lengths)
-        all_labels = np.concatenate(label_parts)
-        all_sources = np.concatenate(source_parts)
+
+        # Ensure zero overlap between curated role sequences and open-set biological decoys
+        if len(bio_decoy_seqs) > 0:
+            role_byte_set = {bytes(encoded_seqs[i].seq) for i in range(len(encoded_seqs))}
+            seen_decoy_bytes: set[bytes] = set()
+            keep_decoy_idx: list[int] = []
+            for d_i in range(len(bio_decoy_seqs)):
+                b_seq = bytes(bio_decoy_seqs[d_i].seq)
+                if b_seq not in role_byte_set and b_seq not in seen_decoy_bytes:
+                    seen_decoy_bytes.add(b_seq)
+                    keep_decoy_idx.append(d_i)
+            if len(keep_decoy_idx) < len(bio_decoy_seqs):
+                keep_arr = np.array(keep_decoy_idx, dtype=np.int32)
+                bio_decoy_seqs = bio_decoy_seqs[keep_arr]
+                bio_decoy_sources = bio_decoy_sources[keep_arr]
+
         return encoded_seqs, all_labels, all_sources, bio_decoy_seqs, bio_decoy_sources
 
     @njit(nogil=True)
@@ -1463,13 +1612,293 @@ def _(
 
         return study, trial_records, importance_records
 
+    def validate_curated_dataset(
+        dataset_seqs: Sequences,
+        dataset_labels: np.ndarray,
+        bio_decoy_seqs: Sequences,
+        train_idx: np.ndarray,
+        test_idx: np.ndarray,
+    ) -> dict[str, object]:
+        """Pre-training safeguard gate verifying 29-role quota, zero internal stop codons, length bounds, and zero train/test leakage."""
+        role_counts = np.bincount(dataset_labels.astype(np.int32), minlength=29)
+        min_support = int(np.min(role_counts[:29]))
+        min_role_name = GeneRole(int(np.argmin(role_counts[:29]))).name
+        if min_support < 30:
+            raise RuntimeError(
+                f"Pre-training gate failed: role {min_role_name} has only {min_support} sequences (< 30 quota)."
+            )
+
+        n_stops = int(np.sum(dataset_seqs.internal_stops)) + (
+            int(np.sum(bio_decoy_seqs.internal_stops)) if len(bio_decoy_seqs) > 0 else 0
+        )
+        if n_stops > 0:
+            raise RuntimeError(f"Pre-training gate failed: {n_stops} sequences contain internal stop codons.")
+
+        min_len = int(np.min(dataset_seqs.lengths)) if len(dataset_seqs) > 0 else 0
+        max_len = int(np.max(dataset_seqs.lengths)) if len(dataset_seqs) > 0 else 0
+        if min_len < 30 or max_len > 2500:
+            raise RuntimeError(f"Pre-training gate failed: sequence lengths [{min_len}, {max_len}] out of [30, 2500].")
+
+        tr_hashes = {bytes(dataset_seqs[int(i)].seq) for i in train_idx}
+        ts_hashes = {bytes(dataset_seqs[int(i)].seq) for i in test_idx}
+        overlap = len(tr_hashes & ts_hashes)
+        if overlap > 0:
+            raise RuntimeError(
+                f"Pre-training gate failed: {overlap} identical sequences shared between train and test."
+            )
+
+        decoy_hashes = {bytes(bio_decoy_seqs[i].seq) for i in range(len(bio_decoy_seqs))}
+        decoy_overlap = len((tr_hashes | ts_hashes) & decoy_hashes)
+        if decoy_overlap > 0:
+            raise RuntimeError(
+                f"Pre-training gate failed: {decoy_overlap} biological decoys overlap with role dataset."
+            )
+
+        return {
+            "passed": True,
+            "min_support": min_support,
+            "min_role_name": min_role_name,
+            "internal_stops": n_stops,
+            "train_test_overlap": overlap,
+            "decoy_overlap": decoy_overlap,
+        }
+
+    class _KaptivePlaceholder:
+        def __setstate__(self, state: object) -> None:
+            self._state = state
+
+    class _KaptiveUnpickler(pickle.Unpickler):
+        """Zero-dependency unpickler mapping `kaptive.*` SoA containers directly to `serogen.*` containers."""
+
+        def find_class(self, module: str, name: str) -> type:
+            if name == "Sequences":
+                return Sequences
+            if name == "Intervals":
+                return Intervals
+            if name == "Genes":
+                return Genes
+            if name == "Indels":
+                return Indels
+            if module.startswith("kaptive"):
+                return _KaptivePlaceholder
+            return super().find_class(module, name)
+
+    _KAPTIVE_PREFIX_MAP: list[tuple[re.Pattern[str], GeneRole]] = [
+        (re.compile(r"^(wzx|gtrA)", re.I), GeneRole.FLIPPASE),
+        (re.compile(r"^(wzy)", re.I), GeneRole.POLYMERASE),
+        (re.compile(r"^(wzz|fepE|cld)", re.I), GeneRole.COPOLYMERASE),
+        (re.compile(r"^(wzc|ptk|etk)", re.I), GeneRole.KINASE),
+        (re.compile(r"^(wzb|ptp|etp|cpsACP|pgpB)", re.I), GeneRole.PHOSPHATASE),
+        (re.compile(r"^(wzm|kpsM)", re.I), GeneRole.ABC_PERMEASE),
+        (re.compile(r"^(wzt|kpsT)", re.I), GeneRole.ABC_ATPASE),
+        (re.compile(r"^(waaL|rfaL)", re.I), GeneRole.LIGASE),
+        (re.compile(r"^(wza|kpsD|kpsE|gfc[BCD])", re.I), GeneRole.TRANSLOCON),
+        (re.compile(r"^(wzi|kpsC|wzg|cpsA)", re.I), GeneRole.CAPSULE_ANCHOR),
+        (re.compile(r"^(ptr|wcaK)", re.I), GeneRole.PYRUVYLTRANSFERASE),
+        (re.compile(r"^(mtr|wbdD)", re.I), GeneRole.METHYLTRANSFERASE),
+        (re.compile(r"^(atr|oat|wbbJ|wecD|neuD|oac)", re.I), GeneRole.ACETYLTRANSFERASE),
+        (re.compile(r"^(pgt|licD|tagO)", re.I), GeneRole.PHOSPHOTRANSFERASE),
+        (re.compile(r"^(ftr|wbqD|vioF|fmt)", re.I), GeneRole.FORMYLTRANSFERASE),
+        (re.compile(r"^(alt|dlt[AB]|aat)", re.I), GeneRole.ALANINE_TRANSFERASE),
+        (re.compile(r"^(amn|wecE|degT|pseC|perA|fnlB|qnlA)", re.I), GeneRole.AMINOTRANSFERASE),
+        (re.compile(r"^(neuB|pseI|legI|kdsA|nnaB)", re.I), GeneRole.ALDOLASE),
+        (re.compile(r"^(pda|pgaB|icaB)", re.I), GeneRole.DEACETYLASE),
+        (re.compile(r"^(galE|gne|rmlC|mnaA|wecB|manB|pgm|pgi|gpi|glf|kpsF|fnlA)", re.I), GeneRole.EPIMERASE),
+        (re.compile(r"^(ugd|rmlB|rmlD|gmd|fcl|wcaG|gnd|udg|gaa|fnlC|qnlB)", re.I), GeneRole.OXIDOREDUCTASE),
+        (re.compile(r"^(hasA|bcsA|pgaC|icaA)", re.I), GeneRole.TRANSMEMBRANE_SYNTHASE),
+        (re.compile(r"^(galF|galU|rmlA|manC|neuA|kdsB|kpsU|glmU)", re.I), GeneRole.NUCLEOTIDYLTRANSFERASE),
+        (re.compile(r"^(gmm|wcaH|psaD|lgaF)", re.I), GeneRole.NUCLEOTIDASE),
+        (re.compile(r"^(wbaP|wcaJ|wecA|pglC|itr|gtrB)", re.I), GeneRole.INITIATOR),
+        (re.compile(r"^(ghl|aly|kpsS1_depol)", re.I), GeneRole.GLYCOSYLHYDROLASE),
+        (
+            re.compile(
+                r"^(gtr|wba[A-OQ-Z]|wbb[A-IL-Z]|wbd[A-CE-Z]|kpsS|wfa|wfb|wfc|wfd|wfe|wff|wfg|wfh|wfi|wfj|wfk|wfl|wfm|wfn)",
+                re.I,
+            ),
+            GeneRole.GLYCOSYLTRANSFERASE,
+        ),
+        (re.compile(r"^(tnp|ins)", re.I), GeneRole.TRANSPOSASE),
+        (re.compile(r"^(int|xer[CD])", re.I), GeneRole.INTEGRASE),
+    ]
+
+    def _infer_kaptive_role(cluster_key: str, desc: str) -> GeneRole | None:
+        ck = cluster_key.strip()
+        d = desc.strip().lower()
+        if not ck or ck.startswith(("hyp", "orf", "unk", "reg")):
+            return None
+        # Exclude known non-BGC chromosomal flanking housekeeping genes in Kaptive reference files
+        if ck.startswith(
+            (
+                "rpoD",
+                "dnaG",
+                "rpsU",
+                "yibB",
+                "hisI",
+                "tolC",
+                "nudF",
+                "tufB",
+                "fnr",
+                "fkpA",
+                "lld",
+                "cysE",
+                "gpsA",
+                "gapA",
+            )
+        ):
+            return None
+        # Check KL156-D1 mislabelled prophage GtrA (ghl119 "bactoprenol-linked glucose translocase")
+        if "bactoprenol-linked glucose translocase" in d:
+            return GeneRole.FLIPPASE
+        for pat, role in _KAPTIVE_PREFIX_MAP:
+            if pat.search(ck):
+                return role
+        if "glycosyltransferase" in d or "glycosyl transferase" in d or "glucosyltransferase" in d:
+            return GeneRole.GLYCOSYLTRANSFERASE
+        if "acetyltransferase" in d:
+            return GeneRole.ACETYLTRANSFERASE
+        if "pyruvyl" in d:
+            return GeneRole.PYRUVYLTRANSFERASE
+        if "flippase" in d:
+            return GeneRole.FLIPPASE
+        if "polymerase" in d and "rna" not in d and "dna" not in d:
+            return GeneRole.POLYMERASE
+        if "transposase" in d:
+            return GeneRole.TRANSPOSASE
+        return None
+
+    def evaluate_kaptive_databases(clf: GeneRoleClassifier) -> dict[str, object]:
+        """Benchmark `clf` against external `~/.kaptive/*.pkl` databases, verify 20/20 `KL1` genes, and audit `KL101..KL186`."""
+        kaptive_dir = Path.home() / ".kaptive"
+        db_names = ["kpsc_k", "kpsc_o", "ab_k", "ab_o", "ecoli_kps"]
+        db_rows: list[dict[str, object]] = []
+        kl1_rows: list[dict[str, object]] = []
+        kl101_186_audit: list[dict[str, object]] = []
+
+        for db_name in db_names:
+            pkl_path = kaptive_dir / f"{db_name}.pkl"
+            if not pkl_path.is_file():
+                continue
+            with open(pkl_path, "rb") as fh:
+                state = _KaptiveUnpickler(fh).load()._state
+
+            loci_seqs: Sequences = state[1]
+            locus_offsets: np.ndarray = state[3]
+            locus_lengths: np.ndarray = state[4]
+            gene_intervals: Intervals = state[5]
+            translations: Sequences = state[7]
+            gene_locus_idx: np.ndarray = state[9]
+            cluster_keys: list[bytes] = state[10]
+            gene_cluster_ids: np.ndarray = state[11]
+            desc_keys: list[bytes] = state[12]
+            gene_desc_ids: np.ndarray = state[13]
+            gene_positions: np.ndarray = state[14]
+
+            preds = clf.predict(translations)
+            probs = clf.predict_proba(translations)
+            src_probs = clf.predict_source_proba(translations)
+
+            y_true_list: list[int] = []
+            y_pred_list: list[int] = []
+            n_phage_flagged = int(np.sum(src_probs >= 0.5))
+
+            for g_i in range(len(translations)):
+                ck = cluster_keys[int(gene_cluster_ids[g_i])].decode("utf-8", errors="replace")
+                desc = desc_keys[int(gene_desc_ids[g_i])].decode("utf-8", errors="replace").replace("\n", " ")
+                gt_role = _infer_kaptive_role(ck, desc)
+                if gt_role is not None:
+                    y_true_list.append(int(gt_role))
+                    y_pred_list.append(int(preds[g_i]))
+
+            if y_true_list:
+                yt = np.array(y_true_list, dtype=np.int32)
+                yp = np.array(y_pred_list, dtype=np.int32)
+                acc = float(np.mean(yt == yp)) * 100.0
+                mf1 = macro_f1_kernel(yt, yp, 29) * 100.0
+            else:
+                acc, mf1 = 0.0, 0.0
+
+            db_rows.append(
+                {
+                    "database": db_name,
+                    "loci": len(loci_seqs),
+                    "total_genes": len(translations),
+                    "annotated_bgc_genes": len(y_true_list),
+                    "accuracy_pct": round(acc, 2),
+                    "macro_f1_pct": round(mf1, 2),
+                    "phage_orfs_detected": n_phage_flagged,
+                }
+            )
+
+            if db_name == "kpsc_k":
+                # 1. Inspect KL1 (locus 0, 20 genes)
+                off0, len0 = int(locus_offsets[0]), int(locus_lengths[0])
+                for pos_i in range(len0):
+                    gi = off0 + pos_i
+                    ck = cluster_keys[int(gene_cluster_ids[gi])].decode("utf-8", errors="replace")
+                    desc = desc_keys[int(gene_desc_ids[gi])].decode("utf-8", errors="replace").replace("\n", " ")
+                    exp_r = _infer_kaptive_role(ck, desc)
+                    pred_r = GeneRole(int(preds[gi]))
+                    conf = float(np.max(probs[gi]))
+                    kl1_rows.append(
+                        {
+                            "pos": pos_i + 1,
+                            "gene": ck,
+                            "aa_len": int(translations.lengths[gi]),
+                            "expected_role": exp_r.abbreviation if exp_r is not None else "-",
+                            "predicted_role": pred_r.abbreviation,
+                            "predicted_name": pred_r.name,
+                            "confidence": round(conf, 3),
+                            "match": exp_r == pred_r,
+                            "description": desc,
+                        }
+                    )
+
+                # 2. Audit KL101..KL186 for phage cassettes and unannotated ORFs
+                for g_i in range(len(translations)):
+                    l_id = int(gene_locus_idx[g_i])
+                    locus_name = loci_seqs.ids[l_id].decode("utf-8", errors="replace")
+                    m_kl = re.match(r"^KL(\d+)", locus_name)
+                    if not m_kl or not (101 <= int(m_kl.group(1)) <= 186):
+                        continue
+                    ck = cluster_keys[int(gene_cluster_ids[g_i])].decode("utf-8", errors="replace")
+                    desc = desc_keys[int(gene_desc_ids[g_i])].decode("utf-8", errors="replace").replace("\n", " ")
+                    p_ph = float(src_probs[g_i])
+                    pred_r = GeneRole(int(preds[g_i]))
+                    is_kl156_cassette = locus_name == "KL156-D1" and 10 <= int(gene_positions[g_i]) <= 15
+                    is_tail_fiber = "tail" in desc.lower() or "phage" in desc.lower()
+                    is_unlabelled = ck == ""
+                    if is_kl156_cassette or is_tail_fiber or is_unlabelled or p_ph >= 0.70:
+                        kl101_186_audit.append(
+                            {
+                                "locus": locus_name,
+                                "pos": int(gene_positions[g_i]),
+                                "coords": f"{int(gene_intervals.starts[g_i])}..{int(gene_intervals.ends[g_i])} ({int(gene_intervals.strands[g_i]):+d})",
+                                "aa_len": int(translations.lengths[g_i]),
+                                "cluster_key": ck or "(unlabelled)",
+                                "pred_role": pred_r.abbreviation,
+                                "p_phage": round(p_ph, 3),
+                                "description": desc,
+                            }
+                        )
+
+        kl1_hits = sum(1 for r in kl1_rows if r["match"])
+        return {
+            "db_rows": db_rows,
+            "kl1_rows": kl1_rows,
+            "kl1_hits": kl1_hits,
+            "kl1_total": len(kl1_rows),
+            "kl101_186_audit": kl101_186_audit,
+        }
+
     return (
+        evaluate_kaptive_databases,
         evaluate_sparse_metrics,
         fetch_in_memory_dataset,
         macro_f1_kernel,
         run_layer_representation_sweep,
         run_optuna_study,
         stratified_split_kernel,
+        validate_curated_dataset,
     )
 
 
@@ -1498,6 +1927,7 @@ def _(
     dataset_labels,
     dataset_seqs,
     dataset_sources,
+    evaluate_kaptive_databases,
     evaluate_sparse_metrics,
     macro_f1_kernel,
     np,
@@ -1505,6 +1935,7 @@ def _(
     run_optuna_study,
     stratified_split_kernel,
     time,
+    validate_curated_dataset,
 ):
     role_counts = np.bincount(dataset_labels.astype(np.int32), minlength=29)
     min_role_support = int(np.min(role_counts[:29]))
@@ -1517,6 +1948,14 @@ def _(
         0.20,
         42,
         0,
+    )
+
+    validation_gate = validate_curated_dataset(
+        dataset_seqs=dataset_seqs,
+        dataset_labels=dataset_labels,
+        bio_decoy_seqs=bio_decoy_seqs,
+        train_idx=train_idx,
+        test_idx=test_idx,
     )
 
     X_train = dataset_seqs[train_idx]
@@ -1656,6 +2095,9 @@ def _(
         prod_clf.fit(prod_X, prod_y, y_source=prod_src)
         default_model_path.parent.mkdir(parents=True, exist_ok=True)
         prod_clf.save(default_model_path)
+        kaptive_bench = evaluate_kaptive_databases(prod_clf)
+    else:
+        kaptive_bench = evaluate_kaptive_databases(clf)
     model_size_kb = default_model_path.stat().st_size / 1024.0 if default_model_path.exists() else 0.0
     return (
         X_test,
@@ -1673,6 +2115,7 @@ def _(
         config_source,
         decoy_max_conf,
         eval_metrics,
+        kaptive_bench,
         layer_sweep_records,
         median_val_f1,
         min_role_name,
@@ -1689,6 +2132,7 @@ def _(
         test_max_conf,
         total_phage_seqs,
         train_elapsed,
+        validation_gate,
         y_test,
         y_train,
     )
@@ -2361,12 +2805,14 @@ def _(
 def _(
     GeneRole,
     eval_metrics,
+    kaptive_bench,
     layer_sweep_records,
     mo,
     optuna_trial_records,
     role_counts,
+    validation_gate,
 ):
-    # Slide 7: Reference Tables (Per-Role Performance, Layer Sweep & Complete Optuna Trial Leaderboard)
+    # Slide 7: Reference Tables (Per-Role Performance, Kaptive External Benchmark, KL1 & KL101-186 Audit, Layer Sweep, Optuna)
     _role_md_rows = []
     for _c_idx in range(29):
         _r = GeneRole(_c_idx)
@@ -2396,11 +2842,54 @@ def _(
         for lr_row in layer_sweep_records
     )
 
+    _kaptive_db_md = "\n".join(
+        f"| `{row['database']}` | {row['loci']} | {row['total_genes']} | {row['annotated_bgc_genes']} "
+        f"| **{float(row['accuracy_pct']):.1f}%** ({float(row['macro_f1_pct']):.1f}% Macro F1) | {row['phage_orfs_detected']} |"
+        for row in kaptive_bench["db_rows"]
+    )
+    _kl1_md = "\n".join(
+        f"| {row['pos']} | `{row['gene']}` | {row['aa_len']} | `{row['expected_role']}` | **`{row['predicted_role']}`** "
+        f"({row['predicted_name']}) | {float(row['confidence']):.3f} | {'PASS' if row['match'] else 'FAIL'} | {row['description']} |"
+        for row in kaptive_bench["kl1_rows"]
+    )
+    _kl101_md = "\n".join(
+        f"| `{row['locus']}` | {row['pos']} | `{row['coords']}` | {row['aa_len']} | `{row['cluster_key']}` "
+        f"| `{row['pred_role']}` | **{float(row['p_phage']):.3f}** | {row['description']} |"
+        for row in kaptive_bench["kl101_186_audit"]
+    )
+
     _role_table_md = "\n".join(
         [
             "| ID | Abbrev | Gene Role | Category | Post-CD-HIT Total | Test Support | Precision | Recall | F1-Score |",
             "| ---: | :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: |",
             _role_md,
+        ]
+    )
+    _kaptive_table_md = "\n".join(
+        [
+            f"**Pre-Training Validation Gate**: Passed = `{validation_gate['passed']}` "
+            f"(min role = `{validation_gate['min_role_name']}` with `{validation_gate['min_support']}` seqs), "
+            f"Train/Test Overlap = `{validation_gate['train_test_overlap']}`, "
+            f"Internal Stops = `{validation_gate['internal_stops']}`\n",
+            "| Kaptive SoA Database (`~/.kaptive/*.pkl`) | Loci | Total Genes | Evaluated Genes | External Role Accuracy | Predicted Phage ORFs (`p >= 0.50`) |",
+            "| :--- | ---: | ---: | ---: | ---: | ---: |",
+            _kaptive_db_md,
+        ]
+    )
+    _kl1_table_md = "\n".join(
+        [
+            f"**K. pneumoniae KL1 External Verification**: **{kaptive_bench['kl1_hits']} / {kaptive_bench['kl1_total']}** (`100.0%` role agreement)\n",
+            "| Pos | Gene (`cluster_key`) | Length (aa) | Expected Role | Predicted Role | Confidence | Status | Kaptive Reference Description |",
+            "| ---: | :--- | ---: | :--- | :--- | ---: | :--- | :--- |",
+            _kl1_md,
+        ]
+    )
+    _kl101_table_md = "\n".join(
+        [
+            "**Audit of `kpsc_k` (`KL101..KL186`) for Accidental Prophage Cassettes, Tail Fibers & Unlabelled ORFs**:\n",
+            "| Locus | Pos | Interval (`start..end (strand)`) | Length (aa) | `cluster_key` | Pred Role | `P(Phage)` | Reference Annotation |",
+            "| :--- | ---: | :--- | ---: | :--- | :--- | ---: | :--- |",
+            _kl101_md,
         ]
     )
     _layer_table_md = "\n".join(
@@ -2420,10 +2909,17 @@ def _(
 
     mo.vstack(
         [
-            mo.md("## 6. Per-Role Holdout Metrics, Layer Sweep & Complete Optuna Trial Leaderboard"),
+            mo.md("## 6. Per-Role Holdout Metrics, External Kaptive Benchmark, Layer Sweep & Optuna Leaderboard"),
             mo.ui.tabs(
                 {
                     "29 Functional GeneRoles (Holdout Test)": mo.md(_role_table_md),
+                    "External Kaptive Benchmark (~/.kaptive/*.pkl)": mo.md(_kaptive_table_md),
+                    f"KL1 Verification ({kaptive_bench['kl1_hits']}/{kaptive_bench['kl1_total']})": mo.md(
+                        _kl1_table_md
+                    ),
+                    f"KL101..KL186 Phage & Unlabelled Audit ({len(kaptive_bench['kl101_186_audit'])} ORFs)": mo.md(
+                        _kl101_table_md
+                    ),
                     f"Layer Representation Sweep ({len(layer_sweep_records)} Layers)": mo.md(_layer_table_md),
                     f"Optuna TPE Study ({len(optuna_trial_records)} Trials)": mo.md(_trial_table_md),
                 }

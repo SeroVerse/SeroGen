@@ -622,6 +622,3 @@ class ArchetypeTensors:
 def get_archetype_tensors() -> ArchetypeTensors:
     """Return the cached singleton `ArchetypeTensors` instance."""
     return ArchetypeTensors.build()
-
-
-LocusArchetypes = LocusArchetype

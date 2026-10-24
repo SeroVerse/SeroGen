@@ -21,14 +21,11 @@ class OrfPredictor:
     Executes Numba JIT-compiled FragGeneScan HMM decoding over single sequences,
     [`Sequences`][serogen.core.seq.seq.Sequences], or [`GenomeAssembly`][serogen.core.genome.GenomeAssembly]
     containers using a unified flat window table and Numba `prange` parallelism, returning
-    batched [`Genes`][serogen.genes.models.Genes]. Supports bacterial and viral/phage translation
-    tables and single-pass co-prediction of bacterial and prophage/phage ORFs.
+    batched [`Genes`][serogen.genes.models.Genes].
 
     Attributes:
         model (HMM): Baked HMM model parameter container.
         genetic_code (GeneticCode): Translation table defining start/stop codons and amino acid mappings.
-        include_phage (bool): If True, enables single-pass phage/prophage ORF co-prediction
-            (sliding local GC adaptation, overlapping operon transitions, and small ORF recovery).
         min_gene_len (int): Minimum gene length in nucleotides.
         local_gc_window (int): Sliding window size in bp for local GC bin adaptation.
     """
@@ -39,8 +36,7 @@ class OrfPredictor:
         window_size: int = 50_000,
         overlap: int = 5_000,
         genetic_code: GeneticCode | int | str = GeneticCode.bacterial,
-        include_phage: bool = False,
-        min_gene_len: int | None = None,
+        min_gene_len: int = 120,
         local_gc_window: int = 4_000,
     ) -> None:
         r"""Initialize an [`OrfPredictor`][serogen.genes.orf.predictor.OrfPredictor] instance.
@@ -53,12 +49,9 @@ class OrfPredictor:
                 gene boundary detection. Defaults to 5_000.
             genetic_code (GeneticCode | int | str): Translation table (instance, NCBI table ID, or name).
                 Defaults to `GeneticCode.bacterial` (Table 11).
-            include_phage (bool): If True, enables single-pass bacterial + phage ORF co-prediction.
-                Defaults to False.
-            min_gene_len (int | None): Optional minimum ORF length threshold in base pairs. If None,
-                defaults to 90 bp when `include_phage=True` or 210 bp when `include_phage=False`.
-            local_gc_window (int): Sliding window size in base pairs for local GC bin adaptation
-                when `include_phage=True`. Defaults to 4_000.
+            min_gene_len (int): Minimum ORF length threshold in base pairs. Defaults to 120 bp.
+            local_gc_window (int): Sliding window size in base pairs for local GC bin adaptation.
+                Defaults to 4_000.
         """
         self.model = model if model is not None else get_hmm_model()
         self.window_size = window_size
@@ -66,11 +59,7 @@ class OrfPredictor:
         self.genetic_code = (
             genetic_code if isinstance(genetic_code, GeneticCode) else GeneticCode.from_table(genetic_code)
         )
-        self.include_phage = include_phage
-        if min_gene_len is not None:
-            self.min_gene_len = int(min_gene_len)
-        else:
-            self.min_gene_len = 90 if include_phage else 210
+        self.min_gene_len = int(min_gene_len)
         self.local_gc_window = int(local_gc_window)
 
     def _predict_flat_batch(
@@ -131,7 +120,6 @@ class OrfPredictor:
             encode_lut,
             lut_rc,
             win_table,
-            self.include_phage,
             self.min_gene_len,
             self.local_gc_window,
             viterbi_params,
@@ -192,7 +180,6 @@ class OrfPredictor:
             lut_rc,
             win_table,
             win_offsets,
-            self.include_phage,
             self.min_gene_len,
             score_params,
             out_bufs,

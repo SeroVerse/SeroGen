@@ -435,10 +435,6 @@ class GeneticCode:
     _CACHE: ClassVar[dict[Any, Self]] = {}
     standard: ClassVar[GeneticCode]
     bacterial: ClassVar[GeneticCode]
-    viral: ClassVar[GeneticCode]
-    viral_amber_q: ClassVar[GeneticCode]
-    viral_opal_w: ClassVar[GeneticCode]
-    viral_opal_g: ClassVar[GeneticCode]
 
     def __new__(
         cls,
@@ -583,16 +579,13 @@ class GeneticCode:
 
     @classmethod
     def from_table(cls, table: int | str | GeneticCode) -> GeneticCode:
-        r"""Resolve a `GeneticCode` instance by NCBI translation table ID (`1, 4, 11, 15, 25`) or name."""
+        r"""Resolve a `GeneticCode` instance by NCBI translation table ID (`1, 11`) or name."""
         if isinstance(table, GeneticCode):
             return table
         if isinstance(table, int):
             by_id = {
                 1: cls.standard,
-                4: cls.viral_opal_w,
                 11: cls.bacterial,
-                15: cls.viral_amber_q,
-                25: cls.viral_opal_g,
             }
             if table in by_id:
                 return by_id[table]
@@ -603,17 +596,6 @@ class GeneticCode:
             "1": cls.standard,
             "bacterial": cls.bacterial,
             "11": cls.bacterial,
-            "viral": cls.viral,
-            "phage": cls.viral,
-            "viral_amber_q": cls.viral_amber_q,
-            "amber_q": cls.viral_amber_q,
-            "15": cls.viral_amber_q,
-            "viral_opal_w": cls.viral_opal_w,
-            "opal_w": cls.viral_opal_w,
-            "4": cls.viral_opal_w,
-            "viral_opal_g": cls.viral_opal_g,
-            "opal_g": cls.viral_opal_g,
-            "25": cls.viral_opal_g,
         }
         if key in by_name:
             return by_name[key]
@@ -722,7 +704,7 @@ class GeneticCode:
         )
 
 
-# Initialize Genetic Code Singletons (Tables 1, 4, 11, 15, 25) --------------------------------------------------------
+# Initialize Genetic Code Singletons (Tables 1, 11) --------------------------------------------------------------------
 _STANDARD_CODON_MAPPING: dict[bytes, bytes] = {
     b"TTT": b"F",
     b"TTC": b"F",
@@ -804,38 +786,6 @@ GeneticCode.bacterial = GeneticCode(
     mapping=_STANDARD_CODON_MAPPING,
     start_codons=(b"TTG", b"CTG", b"ATT", b"ATC", b"ATA", b"ATG", b"GTG"),
     stop_codons=(b"TAA", b"TAG", b"TGA"),
-)
-
-GeneticCode.viral = GeneticCode(
-    table_id=11,
-    name="Bacteriophage and Viral (Table 11)",
-    mapping=_STANDARD_CODON_MAPPING,
-    start_codons=(b"TTG", b"CTG", b"ATT", b"ATC", b"ATA", b"ATG", b"GTG"),
-    stop_codons=(b"TAA", b"TAG", b"TGA"),
-)
-
-GeneticCode.viral_amber_q = GeneticCode(
-    table_id=15,
-    name="Phage Amber-Recoded (TAG->Q, Table 15)",
-    mapping={**_STANDARD_CODON_MAPPING, b"TAG": b"Q"},
-    start_codons=(b"TTG", b"CTG", b"ATG", b"GTG"),
-    stop_codons=(b"TAA", b"TGA"),
-)
-
-GeneticCode.viral_opal_w = GeneticCode(
-    table_id=4,
-    name="Phage/Mycoplasma Opal-Recoded (TGA->W, Table 4)",
-    mapping={**_STANDARD_CODON_MAPPING, b"TGA": b"W"},
-    start_codons=(b"TTG", b"CTG", b"ATT", b"ATC", b"ATA", b"ATG", b"GTG"),
-    stop_codons=(b"TAA", b"TAG"),
-)
-
-GeneticCode.viral_opal_g = GeneticCode(
-    table_id=25,
-    name="Phage/Candidate Division SR1 Opal-Recoded (TGA->G, Table 25)",
-    mapping={**_STANDARD_CODON_MAPPING, b"TGA": b"G"},
-    start_codons=(b"TTG", b"ATG", b"GTG"),
-    stop_codons=(b"TAA", b"TAG"),
 )
 
 
